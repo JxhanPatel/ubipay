@@ -62,7 +62,7 @@ const extractAddressHash = (value: unknown): string => {
 
 export const isStableUsdPegged = (symbol?: string) => {
   const normalized = String(symbol ?? '').toUpperCase();
-  return normalized === 'USDC' || normalized === 'EURC';
+  return normalized === 'USDC' || normalized === 'EURC' || normalized === 'TUSD8';
 };
 
 export const getAssetDecimals = (symbol?: string) => {

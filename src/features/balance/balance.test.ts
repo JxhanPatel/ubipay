@@ -335,6 +335,7 @@ describe('portfolio value calculation with mixed assets', () => {
     expect(formattedPortfolioValue).toBe('77.89');
     expect(isStableUsdPegged('USDC')).toBe(true);
     expect(isStableUsdPegged('EURC')).toBe(true);
+    expect(isStableUsdPegged('tUSD8')).toBe(true);
     expect(isStableUsdPegged('cirBTC')).toBe(false);
   });
 
