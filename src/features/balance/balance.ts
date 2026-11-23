@@ -1,0 +1,441 @@
+export type AssetBalance = {
+  key: string;
+  symbol: string;
+  balance: string;
+  decimals?: number;
+};
+
+export type NativeBalance = {
+  address: string;
+  coinBalance: bigint;
+  coinBalanceFormatted: string;
+  decimals: number;
+  updatedAt: number;
+};
+
+export type TokenBalance = {
+  address: string;
+  tokenAddress: string;
+  symbol: string;
+  balance: bigint;
+  balanceFormatted: string;
+  decimals: number;
+};
+
+const isObjectRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+};
+
+const toBigInt = (value: unknown) => {
+  if (typeof value === 'bigint') {
+    return value;
+  }
+
+  const rawValue = String(value ?? '0').trim();
+  if (!rawValue) {
+    return 0n;
+  }
+
+  if (/^0x[0-9a-fA-F]+$/.test(rawValue)) {
+    return BigInt(rawValue);
+  }
+
+  return BigInt(rawValue);
+};
+
+/** Explorer payloads carry addresses either as plain strings or as objects
+ *  ({ hash } / { address_hash }). Normalize both shapes to a lowercase string. */
+const extractAddressHash = (value: unknown): string => {
+  if (typeof value === 'string') {
+    return value.toLowerCase();
+  }
+  if (isObjectRecord(value)) {
+    const hash = value.hash ?? value.address_hash;
+    if (typeof hash === 'string') {
+      return hash.toLowerCase();
+    }
+  }
+  return '';
+};
+
+export const isStableUsdPegged = (symbol?: string) => {
+  const normalized = String(symbol ?? '').toUpperCase();
+  return normalized === 'USDC' || normalized === 'EURC';
+};
+
+export const getAssetDecimals = (symbol?: string) => {
+  const normalized = String(symbol ?? '').toUpperCase();
+  if (isStableUsdPegged(symbol)) {
+    return 6;
+  }
+
+  if (normalized === 'CIRBTC') {
+    return 8;
+  }
+
+  return 18;
+};
+
+// Placeholder testnet pricing for non-stable assets.
+// Blockscout's `exchange_rate` field is currently always null on this deployment,
+// so we use static mock prices. Replace with a real price oracle when available.
+const MOCK_NON_STABLE_USD_PRICES: Record<string, number> = {
+  CIRBTC: 65000,
+};
+
+// Mock EUR/USD exchange rate for EURC stablecoin pricing.
+// EURC is euro-pegged (1 EURC ≈ 1 EUR), so we need to convert EUR to USD.
+// Current approximate EUR/USD rate - replace with real price oracle later.
+const EURC_USD_RATE = 1.08;
+
+export const getAssetUsdPrice = (symbol: string): number | null => {
+  const normalized = String(symbol ?? '').toUpperCase();
+  if (normalized === 'USDC') {
+    return 1;
+  }
+  if (normalized === 'EURC') {
+    return EURC_USD_RATE;
+  }
+  if (isStableUsdPegged(normalized)) {
+    return 1;
+  }
+  const price = MOCK_NON_STABLE_USD_PRICES[normalized];
+  return Number.isFinite(price) ? price : null;
+};
+
+export const getAssetUsdValue = (symbol: string, balance: string): number | null => {
+  const price = getAssetUsdPrice(symbol);
+  if (price === null) {
+    return null;
+  }
+  const numericBalance = Number.parseFloat(String(balance).replace(/,/g, ''));
+  if (!Number.isFinite(numericBalance)) {
+    return null;
+  }
+  return price * numericBalance;
+};
+
+export const parseTransactionDirection = (walletAddress: string, from: string, to: string) => {
+  const normalizedWallet = String(walletAddress ?? '').toLowerCase();
+  const normalizedFrom = String(from ?? '').toLowerCase();
+  const normalizedTo = String(to ?? '').toLowerCase();
+
+  if (normalizedFrom === normalizedWallet) {
+    return 'sent';
+  }
+
+  if (normalizedTo === normalizedWallet) {
+    return 'received';
+  }
+
+  return 'sent';
+};
+
+export const getTransactionDisplayMeta = (transaction: Record<string, unknown>, walletAddress?: string) => {
+  const tokenPayload = isObjectRecord(transaction.token) ? transaction.token : null;
+  const tokenTransfers = Array.isArray(transaction.token_transfers)
+    ? transaction.token_transfers.filter(isObjectRecord)
+    : [];
+  const firstTransfer = tokenTransfers[0] ?? null;
+  const firstTransferTotal = isObjectRecord(firstTransfer?.total) ? firstTransfer.total : null;
+  const transactionTotal = isObjectRecord(transaction.total) ? transaction.total : null;
+  const transferToken = isObjectRecord(firstTransfer?.token) ? firstTransfer.token : null;
+  const tokenIsPresent = Object.prototype.hasOwnProperty.call(transaction, 'token');
+  const hasTokenPayload = tokenIsPresent && tokenPayload !== null;
+  const isNativeTransfer = !hasTokenPayload && tokenTransfers.length === 0;
+
+  if (isNativeTransfer) {
+    const nativeValue = String(transaction.value ?? transaction.amount ?? '0');
+    const rawValue = toBigInt(nativeValue);
+    return {
+      symbol: 'USDC',
+      decimals: 18,
+      rawValue,
+    };
+  }
+
+  // For swap transactions with multiple token_transfers, inspect all transfers
+  // to identify input (outgoing) and output (incoming) tokens.
+  const hasMultipleTransfers = tokenTransfers.length > 1;
+
+  if (hasMultipleTransfers) {
+    // Find USDC and EURC transfers among all transfers
+    const usdcTransfer = tokenTransfers.find(
+      (t) => isObjectRecord(t.token) && String(t.token?.symbol ?? '').toUpperCase() === 'USDC',
+    );
+    const eurcTransfer = tokenTransfers.find(
+      (t) => isObjectRecord(t.token) && String(t.token?.symbol ?? '').toUpperCase() === 'EURC',
+    );
+
+    let inputSymbol = 'USDC';
+    let outputSymbol = 'EURC';
+    let inputValue = '0';
+    let outputValue = '0';
+
+    const extractValue = (t: Record<string, unknown>, fallbackKey = 'value'): string => {
+      const totalObj = isObjectRecord(t.total) ? t.total as Record<string, unknown> : null;
+      if (totalObj && totalObj.value !== undefined && totalObj.value !== null) {
+        return String(totalObj.value);
+      }
+      if (t.value !== undefined && t.value !== null) {
+        return String(t.value);
+      }
+      return '0';
+    };
+
+    if (usdcTransfer && eurcTransfer) {
+      // Determine direction from transfer from/to: the transfer with wallet as
+      // 'from' is the input (sent), the transfer with wallet as 'to' is the
+      // output (received). This correctly handles EURC→USDC swaps.
+      const usdcFromWallet = walletAddress
+        ? extractAddressHash(usdcTransfer.from) === walletAddress.toLowerCase()
+        : false;
+      const eurcFromWallet = walletAddress
+        ? extractAddressHash(eurcTransfer.from) === walletAddress.toLowerCase()
+        : false;
+      const usdcToWallet = walletAddress
+        ? extractAddressHash(usdcTransfer.to) === walletAddress.toLowerCase()
+        : false;
+      const eurcToWallet = walletAddress
+        ? extractAddressHash(eurcTransfer.to) === walletAddress.toLowerCase()
+        : false;
+
+      if (usdcToWallet && eurcFromWallet) {
+        // EURC→USDC swap: EURC sent (from), USDC received (to)
+        inputSymbol = 'EURC';
+        outputSymbol = 'USDC';
+        inputValue = extractValue(eurcTransfer);
+        outputValue = extractValue(usdcTransfer);
+      } else if (usdcFromWallet && eurcToWallet) {
+        // USDC→EURC swap: USDC sent (from), EURC received (to)
+        inputSymbol = 'USDC';
+        outputSymbol = 'EURC';
+        inputValue = extractValue(usdcTransfer);
+        outputValue = extractValue(eurcTransfer);
+      } else {
+        // Default to USDC→EURC (legacy behavior)
+        inputSymbol = 'USDC';
+        outputSymbol = 'EURC';
+        inputValue = extractValue(usdcTransfer);
+        outputValue = extractValue(eurcTransfer);
+      }
+    } else if (usdcTransfer) {
+      // Only USDC transfer — treat as sent
+      inputSymbol = 'USDC';
+      inputValue = extractValue(usdcTransfer);
+    } else if (eurcTransfer) {
+      // Only EURC transfer — treat as received
+      outputSymbol = 'EURC';
+      outputValue = extractValue(eurcTransfer);
+    }
+
+    const rawValue = toBigInt(inputValue);
+    const inputRawValue = toBigInt(inputValue);
+    const outputRawValue = toBigInt(outputValue);
+    const sixDecimals = 6;
+
+    return {
+      symbol: inputSymbol,
+      decimals: sixDecimals,
+      rawValue,
+      inputSymbol,
+      outputSymbol,
+      inputValue: formatTokenBalance(inputRawValue, sixDecimals),
+      outputValue: formatTokenBalance(outputRawValue, sixDecimals),
+    };
+  }
+
+  const transferSymbol = String(
+    transferToken?.symbol
+      ?? firstTransfer?.symbol
+      ?? tokenPayload?.symbol
+      ?? 'TOKEN',
+  );
+  const transferDecimals = Number(
+    transferToken?.decimals
+      ?? firstTransfer?.decimals
+      ?? tokenPayload?.decimals
+      ?? getAssetDecimals(transferSymbol),
+  );
+  const transferValueCandidates = [
+    firstTransferTotal?.value,
+    firstTransfer?.value,
+    transactionTotal?.value,
+    transaction.amount,
+    transaction.value,
+  ];
+  const transferValue = String(
+    transferValueCandidates.find((candidate) => {
+      const normalized = String(candidate ?? '').trim();
+      if (!normalized) {
+        return false;
+      }
+
+      return toBigInt(normalized) !== 0n;
+    }) ?? '0',
+  );
+  const rawValue = toBigInt(transferValue);
+  const normalizedAmount = Number(formatTokenBalance(rawValue, Number.isFinite(transferDecimals) ? transferDecimals : getAssetDecimals(transferSymbol)));
+
+  // Temporary debug assertion: flag suspicious zero-amount swaps for debugging
+  if (normalizedAmount === 0 && rawValue > 0n) {
+    console.warn('[arcpay:swap-debug] suspicious zero-amount swap', { symbol: transferSymbol, rawValue: String(rawValue) });
+  }
+
+  if (Number.isFinite(normalizedAmount) && Math.abs(normalizedAmount) > 1_000_000) {
+    console.warn('[arcpay:tx-display-meta] suspicious amount detected', {
+      transaction,
+      symbol: transferSymbol,
+      decimals: Number.isFinite(transferDecimals) ? transferDecimals : getAssetDecimals(transferSymbol),
+      rawValue: transferValue,
+      normalizedAmount,
+    });
+  }
+
+  return {
+    symbol: transferSymbol,
+    decimals: Number.isFinite(transferDecimals) ? transferDecimals : getAssetDecimals(transferSymbol),
+    rawValue,
+  };
+};
+
+export const formatTokenBalance = (rawBalance: bigint, decimals: number) => {
+  const scale = 10n ** BigInt(decimals);
+  const whole = rawBalance / scale;
+  const fraction = rawBalance % scale;
+
+  if (fraction === 0n) {
+    return whole.toString();
+  }
+
+  const fractionString = fraction.toString().padStart(decimals, '0').replace(/0+$/, '');
+  return `${whole}.${fractionString}`;
+};
+
+export const formatDisplayBalance = (balance: string | number) => {
+  const numericValue = Number.parseFloat(String(balance));
+  if (!Number.isFinite(numericValue)) {
+    return '0.00';
+  }
+
+  if (numericValue === 0) {
+    return '0.00';
+  }
+
+  // For small nonzero balances, preserve enough precision to avoid rounding to zero.
+  // Use up to 8 decimal places, but at least 2.
+  const absValue = Math.abs(numericValue);
+  let fractionDigits = 2;
+  if (absValue > 0 && absValue < 0.01) {
+    // Find enough digits to show the first significant digit
+    const decimalStr = absValue.toFixed(8);
+    const match = decimalStr.match(/^0\.0*(\d)/);
+    if (match) {
+      const leadingZeros = match[0].length - 2; // subtract "0."
+      fractionDigits = Math.min(8, leadingZeros + 1);
+    }
+  }
+
+  return new Intl.NumberFormat('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: fractionDigits,
+  }).format(numericValue);
+};
+
+export const formatAmountForInput = (amount: number | string, decimals: number) => {
+  const numericValue = Number.parseFloat(String(amount));
+  if (!Number.isFinite(numericValue) || numericValue < 0) {
+    return '';
+  }
+  const maxDecimals = Number.isFinite(decimals) && decimals >= 0 ? decimals : 2;
+  return numericValue.toFixed(maxDecimals).replace(/0+$/, '').replace(/\.$/, '');
+};
+
+export const buildRequestLink = (id: string, amount: string, note = '') => {
+  const normalizedId = id.trim();
+  const normalizedAmount = amount.trim();
+  const normalizedNote = note.trim();
+
+  if (!normalizedId || !normalizedAmount) {
+    return '';
+  }
+
+  const baseLink = `arcpay://request?id=${normalizedId}&amount=${normalizedAmount}`;
+  if (!normalizedNote) {
+    return baseLink;
+  }
+
+  return `${baseLink}&note=${encodeURIComponent(normalizedNote)}`;
+};
+
+export const filterNonZeroAssetBalances = (assets: AssetBalance[]) => {
+  const nonZeroAssets = assets.filter((asset) => {
+    const normalized = Number(asset.balance);
+    return Number.isFinite(normalized) && normalized > 0;
+  });
+
+  return nonZeroAssets.sort((left, right) => {
+    if (left.symbol === 'USDC') {
+      return -1;
+    }
+    if (right.symbol === 'USDC') {
+      return 1;
+    }
+    return 0;
+  });
+};
+
+export const parseNativeBalance = (
+  payload: Record<string, unknown>,
+  address: string,
+): NativeBalance | null => {
+  const coinBalanceRaw = payload.coin_balance;
+  if (!coinBalanceRaw) {
+    return null;
+  }
+
+  const coinBalance = toBigInt(coinBalanceRaw);
+  const decimals = 18; // Native USDC on Arc uses 18 decimals
+  const coinBalanceFormatted = formatTokenBalance(coinBalance, decimals);
+
+  return {
+    address,
+    coinBalance,
+    coinBalanceFormatted,
+    decimals,
+    updatedAt: Date.now(),
+  };
+};
+
+export const parseTokenBalances = (
+  payload: Array<Record<string, unknown>>,
+  address: string,
+): TokenBalance[] => {
+  if (!Array.isArray(payload)) {
+    return [];
+  }
+
+  return payload
+    .filter((item) => {
+      const token = isObjectRecord(item.token) ? item.token : null;
+      return token?.symbol && item.value;
+    })
+    .map((item) => {
+      const token = isObjectRecord(item.token) ? item.token : {};
+      const rawSymbol = token.symbol;
+      const symbol = typeof rawSymbol === 'string' ? rawSymbol : 'TOKEN';
+      const decimals = Number(token.decimals ?? getAssetDecimals(symbol));
+      const balance = toBigInt(item.value ?? '0');
+      const balanceFormatted = formatTokenBalance(balance, Number.isFinite(decimals) ? decimals : getAssetDecimals(symbol));
+      const tokenAddress = String(token.address_hash ?? symbol);
+
+      return {
+        address,
+        tokenAddress,
+        symbol,
+        balance,
+        balanceFormatted,
+        decimals: Number.isFinite(decimals) ? decimals : getAssetDecimals(symbol),
+      };
+    });
+};

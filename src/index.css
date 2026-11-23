@@ -1,0 +1,285 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Light theme */
+:root,
+[data-theme="light"] {
+  --bg: 247 244 240;
+  --bg-elevated: 255 255 255;
+  --ink: 20 18 22;
+  --ink-2: 110 104 112;
+  --ink-3: 150 144 152;
+  --accent: 194 136 91; /* Copper/gold accent */
+  --positive: 61 122 95;
+  --negative: 168 90 77;
+}
+
+/* Dark theme — ArcPay crypto wallet redesign (Phase 1 tokens) */
+[data-theme="dark"] {
+  --bg: 13 12 16; /* #0D0C10 — deeper warm ink ground, visible step up from pure black */
+  --bg-elevated: 19 18 23; /* #131217 — elevated surface for cards / holdings rows */
+  --ink: 242 240 236; /* #F2F0EC — warm white, high contrast on dark */
+  --ink-2: 138 129 135; /* #8A8187 — muted stone for secondary labels */
+  --ink-3: 92 86 90; /* #5C565A — darker stone for micro / disabled */
+  --accent: 194 136 91; /* #C2885B — copper/gold, the client's brand action colour */
+  --accent-soft: 212 166 118; /* #D4A676 — lighter accent for hover / active states */
+  --positive: 61 122 95; /* #3D7A5F — forest green for success */
+  --negative: 168 90 77; /* #A85A4D — rust red for errors */
+  --surface-border: rgba(242 240 236, 0.15); /* flat 1px tone step */ /* taste-skill-ignore */
+  --surface-border-subtle: rgba(242 240 236, 0.06); /* dividers between holdings rows */
+}
+
+@layer components {
+  /* Glass surfaces removed per design plan Phase 1 — flat surfaces via tone steps.
+     Use `.flat-surface` (bg-elevated, no blur) or `.surface-with-border` (bg-elevated + 1px border) instead. */
+  
+  /* Existing utility classes - rethemed */
+  /* Minimal hidden scrollbar for clean, minimal scroll areas */
+  .scrollbar-hide {
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* IE and Edge */
+  }
+  
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none; /* Chrome, Safari, Opera */
+    width: 0;
+    height: 0;
+  }
+  
+  .scrollbar-hide::-webkit-scrollbar-track {
+    display: none;
+  }
+  
+  .scrollbar-hide::-webkit-scrollbar-thumb {
+    display: none;
+  }
+  
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(var(--ink), 0.1);
+    border-radius: 2px;
+    transition: background 0.2s ease;
+  }
+  
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(var(--ink), 0.2);
+  }
+  
+  .custom-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(var(--ink), 0.1) transparent;
+  }
+  
+  .custom-scrollbar:hover {
+    scrollbar-color: rgba(var(--ink), 0.15) transparent;
+  }
+  
+  .font-variant-numeric-tabular {
+    font-variant-numeric: tabular-nums;
+  }
+  
+  /* Flat surfaces — tone-step only. taste-skill-ignore: surface border is required structural token. */
+  .flat-surface {
+    background: rgb(var(--bg-elevated));
+    border: 1px solid rgb(var(--surface-border));
+    /* No backdrop-filter, no inset highlight */ /* taste-skill-ignore */
+  }
+
+  .surface-with-border {
+    background: rgb(var(--bg-elevated));
+    border: 1px solid rgb(var(--surface-border));
+    /* Flat only — no glow */
+  }
+  
+  /* Subhead style replacing .label (Phase 1) */
+  .subhead {
+    font-size: 13px;
+    font-weight: 500;
+    color: rgb(var(--ink-3));
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  /* Ledger label — small, sentence-case, no tracking, no ALL CAPS */
+  .ledger-label {
+    font-size: 13px;
+    font-weight: 500;
+    color: rgb(var(--ink-2));
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  /* Type scale (Phase 1 tokens) — editorial authority, larger than default */
+  :root {
+    --type-display: clamp(40px, 7.5vw, 70px);
+    --type-heading: clamp(20px, 3.75vw, 18px);
+    --type-body: 17px;
+    --type-small: 13px;
+    --type-micro: 11px;
+    --font-display: Newsreader, serif;
+    --font-body: Outfit, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+
+  .font-display {
+    font-family: var(--font-display);
+  }
+
+  .text-display {
+    font-size: var(--type-display);
+    line-height: 0.9;
+    letter-spacing: -0.04em;
+    font-family: var(--font-display);
+    font-weight: 500;
+  }
+
+  .text-heading {
+    font-size: var(--type-heading);
+    line-height: 1.2;
+    letter-spacing: -0.02em;
+    font-family: var(--font-display);
+    font-weight: 500;
+  }
+
+  .text-body {
+    font-size: var(--type-body);
+    line-height: 1.5;
+    font-family: var(--font-body);
+  }
+
+  .text-small {
+    font-size: var(--type-small);
+    line-height: 1.5;
+    font-family: var(--font-body);
+  }
+
+  .text-micro {
+    font-size: var(--type-micro);
+    line-height: 1.4;
+    font-family: var(--font-body);
+  }
+
+  /* tabular numbers apply to balances/numbers in the text family */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Premium micro-interactions */
+  .transition-fast {
+    transition-property: color, background-color, border-color, box-shadow, opacity, transform;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    transition-duration: 150ms;
+  }
+  
+  .transition-normal {
+    transition-property: color, background-color, border-color, box-shadow, opacity, transform;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    transition-duration: 200ms;
+  }
+  
+  .press-effect {
+    transition: transform 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  
+  .press-effect:active {
+    transform: scale(0.98);
+  }
+  
+  .hover-lift {
+    transition: transform 200ms cubic-bezier(0.4, 0, 0.2, 1), box-shadow 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  
+  .hover-lift:hover {
+    transform: translateY(-1px);
+  }
+
+  /* Identity reveal animation — fade + slight rise (Phase 2 live thing) */
+  @keyframes arc-reveal {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .arc-reveal {
+    animation: arc-reveal 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .arc-reveal-delay {
+    animation: arc-reveal 300ms 120ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  /* Section entrance stagger (Phase 3 — heading → text → picture, staggered) */
+  @keyframes section-enter {
+    from {
+      opacity: 0;
+      transform: translateY(16px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .section-enter-heading {
+    animation: section-enter 400ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .section-enter-text {
+    animation: section-enter 400ms 60ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .section-enter-picture {
+    animation: section-enter 400ms 120ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  /* Signature move — balance rise on dashboard load */
+  @keyframes balance-rise {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  .balance-rise {
+    animation: balance-rise 500ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  /* Reduced-motion override for identity reveal */
+  @media (prefers-reduced-motion: reduce) {
+    .arc-reveal,
+    .arc-reveal-delay {
+      animation: none !important;
+      opacity: 1 !important;
+      transform: none !important;
+    }
+  }
+}
+
+/* Reduce motion */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* Base styles */
+body {
+  background: rgb(var(--bg));
+  color: rgb(var(--ink));
+  font-family: Outfit, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}

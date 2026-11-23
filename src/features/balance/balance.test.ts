@@ -1,0 +1,484 @@
+import { describe, expect, it } from 'vitest';
+import {
+  buildRequestLink,
+  filterNonZeroAssetBalances,
+  formatDisplayBalance,
+  formatTokenBalance,
+  getAssetDecimals,
+  getAssetUsdPrice,
+  getAssetUsdValue,
+  getTransactionDisplayMeta,
+  isStableUsdPegged,
+  parseNativeBalance,
+  parseTokenBalances,
+  parseTransactionDirection,
+} from './balance';
+import cirBtcFixture from './__fixtures__/token-balance-cirbtc.json';
+
+describe('formatTokenBalance', () => {
+  it('formats USDC balances from raw token units', () => {
+    expect(formatTokenBalance(20_000_000n, 6)).toBe('20');
+    expect(formatTokenBalance(1_234_567n, 6)).toBe('1.234567');
+  });
+});
+
+describe('formatDisplayBalance', () => {
+  it('rounds balances to two visible decimals for mobile display', () => {
+    expect(formatDisplayBalance('18.901234')).toBe('18.90');
+    expect(formatDisplayBalance('20')).toBe('20.00');
+    expect(formatDisplayBalance('0')).toBe('0.00');
+  });
+});
+
+describe('parseTransactionDirection', () => {
+  it('classifies wallet-owned outbound transactions as sent and inbound transactions as received', () => {
+    expect(parseTransactionDirection('0x1111111111111111111111111111111111111111', '0x1111111111111111111111111111111111111111', '0x2222222222222222222222222222222222222222')).toBe('sent');
+    expect(parseTransactionDirection('0x1111111111111111111111111111111111111111', '0x2222222222222222222222222222222222222222', '0x1111111111111111111111111111111111111111')).toBe('received');
+  });
+
+  it('matches addresses case-insensitively', () => {
+    expect(parseTransactionDirection('0xAbC1234567890abcdef1234567890abcdef1234', '0xAbC1234567890abcdef1234567890abcdef1234', '0xDEF1234567890abcdef1234567890abcdef1234')).toBe('sent');
+    expect(parseTransactionDirection('0xAbC1234567890abcdef1234567890abcdef1234', '0xDEF1234567890abcdef1234567890abcdef1234', '0xabc1234567890abcdef1234567890abcdef1234')).toBe('received');
+  });
+});
+
+describe('getAssetDecimals', () => {
+  it('uses the Arc Pay token precision rules for stable assets', () => {
+    expect(getAssetDecimals('USDC')).toBe(6);
+    expect(getAssetDecimals('EURC')).toBe(6);
+    expect(getAssetDecimals('ARC')).toBe(18);
+  });
+
+  it('uses 8 decimals for cirBTC', () => {
+    expect(getAssetDecimals('cirBTC')).toBe(8);
+    expect(getAssetDecimals('CIRBTC')).toBe(8);
+  });
+});
+
+describe('getTransactionDisplayMeta', () => {
+  it('formats native transfers as USDC with 18 decimals (EVM base units) instead of defaulting to ARC', () => {
+    const nativeTx = {
+      value: '100000000000000000',
+      token: null,
+      token_transfers: [],
+    };
+
+    const meta = getTransactionDisplayMeta(nativeTx as Record<string, unknown>);
+
+    expect(meta.symbol).toBe('USDC');
+    expect(meta.decimals).toBe(18);
+    expect(formatTokenBalance(meta.rawValue, meta.decimals)).toBe('0.1');
+    expect(formatDisplayBalance(formatTokenBalance(meta.rawValue, meta.decimals))).toBe('0.10');
+    expect(meta.symbol).not.toBe('ARC');
+  });
+
+  it('preserves explicit token symbol and decimals for token transfers', () => {
+    const tokenTx = {
+      value: '0',
+      token: null,
+      token_transfers: [
+        {
+          value: '2500000',
+          total: { value: '2500000' },
+          token: {
+            symbol: 'EURC',
+            decimals: 6,
+          },
+        },
+      ],
+    };
+
+    const meta = getTransactionDisplayMeta(tokenTx as Record<string, unknown>);
+
+    expect(meta.symbol).toBe('EURC');
+    expect(meta.decimals).toBe(6);
+    expect(formatTokenBalance(meta.rawValue, meta.decimals)).toBe('2.5');
+    expect(meta.symbol).not.toBe('USDC');
+  });
+
+  it('falls back to the root transaction value when the explorer reports a zero token transfer total', () => {
+    const tokenTx = {
+      value: '100000',
+      token: null,
+      token_transfers: [
+        {
+          value: '0',
+          total: { value: '0' },
+          token: {
+            symbol: 'USDC',
+            decimals: 6,
+          },
+        },
+      ],
+    };
+
+    const meta = getTransactionDisplayMeta(tokenTx as Record<string, unknown>);
+
+    expect(meta.symbol).toBe('USDC');
+    expect(meta.decimals).toBe(6);
+    expect(formatTokenBalance(meta.rawValue, meta.decimals)).toBe('0.1');
+  });
+
+  it('detects EURC→USDC direction with object-shaped from/to (regression: displayed inverted as USDC→EURC)', () => {
+    const wallet = '0xFE0b5459Ef62d90B516320d7012E4E1769251321';
+    const pool = '0xb3685D16AAa000000000000000000000000000001';
+    // Mirrors the real explorer detail payload for tx 0x508ac12f…: EURC sent
+    // from the wallet, USDC received by the wallet. from/to are objects.
+    const swapTx = {
+      value: '0',
+      token: null,
+      token_transfers: [
+        {
+          total: { value: '1000000' },
+          from: { hash: wallet },
+          to: { hash: pool },
+          token: { symbol: 'EURC', decimals: '6' },
+        },
+        {
+          total: { value: '1179689' },
+          from: { hash: pool },
+          to: { hash: wallet },
+          token: { symbol: 'USDC', decimals: '6' },
+        },
+      ],
+    };
+
+    const meta = getTransactionDisplayMeta(swapTx as Record<string, unknown>, wallet);
+
+    expect(meta.inputSymbol).toBe('EURC');
+    expect(meta.outputSymbol).toBe('USDC');
+    expect(meta.inputValue).toBe('1');
+    expect(meta.outputValue).toBe('1.179689');
+  });
+
+  it('detects USDC→EURC direction with object-shaped from/to', () => {
+    const wallet = '0xFE0b5459Ef62d90B516320d7012E4E1769251321';
+    const pool = '0xb3685D16AAa000000000000000000000000000001';
+    const swapTx = {
+      value: '0',
+      token: null,
+      token_transfers: [
+        {
+          total: { value: '1182064' },
+          from: { hash: wallet },
+          to: { hash: pool },
+          token: { symbol: 'USDC', decimals: '6' },
+        },
+        {
+          total: { value: '1000000' },
+          from: { hash: pool },
+          to: { hash: wallet },
+          token: { symbol: 'EURC', decimals: '6' },
+        },
+      ],
+    };
+
+    const meta = getTransactionDisplayMeta(swapTx as Record<string, unknown>, wallet);
+
+    expect(meta.inputSymbol).toBe('USDC');
+    expect(meta.outputSymbol).toBe('EURC');
+    expect(meta.inputValue).toBe('1.182064');
+    expect(meta.outputValue).toBe('1');
+  });
+
+  it('detects swap direction with plain-string from/to addresses', () => {
+    const wallet = '0xfe0b5459ef62d90b516320d7012e4e1769251321';
+    const pool = '0xb3685d16aaa00000000000000000000000000001';
+    const swapTx = {
+      value: '0',
+      token: null,
+      token_transfers: [
+        {
+          total: { value: '1000000' },
+          from: wallet,
+          to: pool,
+          token: { symbol: 'EURC', decimals: '6' },
+        },
+        {
+          total: { value: '1179689' },
+          from: pool,
+          to: wallet,
+          token: { symbol: 'USDC', decimals: '6' },
+        },
+      ],
+    };
+
+    const meta = getTransactionDisplayMeta(swapTx as Record<string, unknown>, wallet);
+
+    expect(meta.inputSymbol).toBe('EURC');
+    expect(meta.outputSymbol).toBe('USDC');
+    expect(meta.inputValue).toBe('1');
+    expect(meta.outputValue).toBe('1.179689');
+  });
+
+  it('falls back to the legacy USDC→EURC default when transfer addresses are absent', () => {
+    const wallet = '0xFE0b5459Ef62d90B516320d7012E4E1769251321';
+    const swapTx = {
+      value: '0',
+      token: null,
+      token_transfers: [
+        {
+          total: { value: '1179689' },
+          token: { symbol: 'USDC', decimals: '6' },
+        },
+        {
+          total: { value: '1000000' },
+          token: { symbol: 'EURC', decimals: '6' },
+        },
+      ],
+    };
+
+    const meta = getTransactionDisplayMeta(swapTx as Record<string, unknown>, wallet);
+
+    expect(meta.inputSymbol).toBe('USDC');
+    expect(meta.outputSymbol).toBe('EURC');
+    expect(meta.inputValue).toBe('1.179689');
+    expect(meta.outputValue).toBe('1');
+  });
+});
+
+describe('buildRequestLink', () => {
+  it('builds a request deep link with URL-encoded note text and a positive amount', () => {
+    expect(buildRequestLink('0x1234567890abcdef1234567890abcdef12345678', '12.50', 'Dinner Split')).toBe(
+      'arcpay://request?id=0x1234567890abcdef1234567890abcdef12345678&amount=12.50&note=Dinner%20Split',
+    );
+  });
+
+  it('omits the note parameter entirely when the note is empty', () => {
+    expect(buildRequestLink('0x1234567890abcdef1234567890abcdef12345678', '12.50', '')).toBe(
+      'arcpay://request?id=0x1234567890abcdef1234567890abcdef12345678&amount=12.50',
+    );
+  });
+});
+
+describe('filterNonZeroAssetBalances', () => {
+  it('keeps only assets with a positive balance', () => {
+    const assets = [
+      { key: 'arc', symbol: 'ARC', balance: '0' },
+      { key: 'usdc', symbol: 'USDC', balance: '20' },
+      { key: 'usdt', symbol: 'USDT', balance: '0.000000' },
+    ];
+
+    expect(filterNonZeroAssetBalances(assets)).toEqual([{ key: 'usdc', symbol: 'USDC', balance: '20' }]);
+  });
+
+  it('keeps USDC first even when the explorer response returns it later in the array', () => {
+    const assets = [
+      { key: 'arc', symbol: 'ARC', balance: '5' },
+      { key: 'eurc', symbol: 'EURC', balance: '2' },
+      { key: 'usdc', symbol: 'USDC', balance: '20' },
+    ];
+
+    expect(filterNonZeroAssetBalances(assets)).toEqual([
+      { key: 'usdc', symbol: 'USDC', balance: '20' },
+      { key: 'arc', symbol: 'ARC', balance: '5' },
+      { key: 'eurc', symbol: 'EURC', balance: '2' },
+    ]);
+  });
+});
+
+describe('cirBTC balance from explorer fixture', () => {
+  it('correctly formats a small cirBTC balance without rounding to zero', () => {
+    const cirBtcEntry = cirBtcFixture.find(
+      (entry) => entry.token?.symbol === 'cirBTC',
+    );
+    expect(cirBtcEntry).toBeDefined();
+    expect(cirBtcEntry?.token?.decimals).toBe('8');
+    expect(cirBtcEntry?.value).toBe('20000');
+
+    const decimals = Number(cirBtcEntry?.token?.decimals ?? getAssetDecimals('cirBTC'));
+    const rawBalance = BigInt(cirBtcEntry?.value ?? '0');
+    const formattedBalance = formatTokenBalance(rawBalance, decimals);
+
+    expect(formattedBalance).toBe('0.0002');
+    expect(Number(formattedBalance)).toBeGreaterThan(0);
+  });
+
+  it('preserves precision when displaying small balances in the asset detail modal', () => {
+    const cirBtcEntry = cirBtcFixture.find(
+      (entry) => entry.token?.symbol === 'cirBTC',
+    );
+    expect(cirBtcEntry).toBeDefined();
+
+    const decimals = Number(cirBtcEntry?.token?.decimals ?? getAssetDecimals('cirBTC'));
+    const rawBalance = BigInt(cirBtcEntry?.value ?? '0');
+    const formattedBalance = formatTokenBalance(rawBalance, decimals);
+
+    // The display balance should NOT round to "0.00" for a nonzero balance
+    const displayBalance = formatDisplayBalance(formattedBalance);
+    expect(displayBalance).not.toBe('0.00');
+    expect(Number(displayBalance.replace(/,/g, ''))).toBeGreaterThan(0);
+  });
+});
+
+describe('portfolio value calculation with mixed assets', () => {
+  it('includes only stable USD-pegged assets (USDC, EURC) in total portfolio value', () => {
+    const mixedAssets = [
+      { key: 'usdc', symbol: 'USDC', balance: '38.894348', decimals: 6 },
+      { key: 'eurc', symbol: 'EURC', balance: '39.000000', decimals: 6 },
+      { key: 'cirbtc', symbol: 'cirBTC', balance: '0.0002', decimals: 8 },
+    ];
+
+    // Calculate portfolio value manually like App.tsx does
+    const portfolioValue = mixedAssets.reduce((total, asset) => {
+      if (!isStableUsdPegged(asset.symbol)) {
+        return total;
+      }
+      const numericBalance = Number.parseFloat(asset.balance.replace(/,/g, ''));
+      return total + (Number.isFinite(numericBalance) ? numericBalance : 0);
+    }, 0);
+
+    const formattedPortfolioValue = formatDisplayBalance(portfolioValue);
+    
+    // Should include USDC (38.89) + EURC (39.00) = 77.89
+    // Should exclude cirBTC (0.0002) since it's not USD-pegged
+    expect(formattedPortfolioValue).toBe('77.89');
+    expect(isStableUsdPegged('USDC')).toBe(true);
+    expect(isStableUsdPegged('EURC')).toBe(true);
+    expect(isStableUsdPegged('cirBTC')).toBe(false);
+  });
+
+  it('handles USDC/EURC-only wallets correctly (regression test)', () => {
+    const stableOnlyAssets = [
+      { key: 'usdc', symbol: 'USDC', balance: '50.00', decimals: 6 },
+      { key: 'eurc', symbol: 'EURC', balance: '25.50', decimals: 6 },
+    ];
+
+    const portfolioValue = stableOnlyAssets.reduce((total, asset) => {
+      if (!isStableUsdPegged(asset.symbol)) {
+        return total;
+      }
+      const numericBalance = Number.parseFloat(asset.balance.replace(/,/g, ''));
+      return total + (Number.isFinite(numericBalance) ? numericBalance : 0);
+    }, 0);
+
+    const formattedPortfolioValue = formatDisplayBalance(portfolioValue);
+    expect(formattedPortfolioValue).toBe('75.50');
+  });
+});
+
+describe('parseNativeBalance', () => {
+  it('parses native USDC balance from address endpoint at 18 decimals', () => {
+    const fixture = {
+      "block_number_balance_updated_at": 56265081,
+      "coin_balance": "35360050196662244098162422",
+      "hash": "0xD4c0B787aA2ff9Eb751Bb515c877EbBF2Daddaae",
+    };
+
+    const result = parseNativeBalance(fixture, '0xD4c0B787aA2ff9Eb751Bb515c877EbBF2Daddaae');
+
+    expect(result).toEqual({
+      address: '0xD4c0B787aA2ff9Eb751Bb515c877EbBF2Daddaae',
+      coinBalance: 35360050196662244098162422n,
+      coinBalanceFormatted: '35360050.196662244098162422',
+      decimals: 18,
+      updatedAt: expect.any(Number),
+    });
+  });
+
+  it('confirms native balance is at 18 decimals vs USDC token at 6 decimals', () => {
+    // Native balance fixture (from address endpoint)
+    const nativeFixture = {
+      "coin_balance": "35360050196662244098162422", // 18 decimals
+    };
+    
+    // Token balance fixture (from token-balances endpoint)
+    const tokenFixture = [
+      {
+        "token": {
+          "symbol": "USDC",
+          "decimals": "6",
+        },
+        "value": "35359990191014", // 6 decimals
+      }
+    ];
+
+    const nativeResult = parseNativeBalance(nativeFixture, 'test');
+    const tokenResult = parseTokenBalances(tokenFixture, 'test');
+
+    expect(nativeResult?.coinBalanceFormatted).toBe('35360050.196662244098162422'); // 18 decimals
+    expect(tokenResult[0]?.balanceFormatted).toBe('35359990.191014'); // 6 decimals
+    
+    // These are different balances - native coin_balance vs USDC token balance
+    expect(nativeResult?.coinBalanceFormatted).not.toBe(tokenResult[0]?.balanceFormatted);
+  });
+
+describe('getAssetUsdPrice', () => {
+  it('returns the mock price for cirBTC (case-insensitive)', () => {
+    expect(getAssetUsdPrice('cirBTC')).toBe(65000);
+    expect(getAssetUsdPrice('CIRBTC')).toBe(65000);
+  });
+
+  it('returns 1 for USDC (USD-pegged stablecoin)', () => {
+    expect(getAssetUsdPrice('USDC')).toBe(1);
+  });
+
+  it('returns EUR/USD rate for EURC (euro-pegged stablecoin)', () => {
+    // Should return the mock EUR/USD rate, not 1
+    expect(getAssetUsdPrice('EURC')).toBe(1.08);
+  });
+
+  it('returns null for unknown or unpriced symbols', () => {
+    expect(getAssetUsdPrice('ARC')).toBeNull();
+    expect(getAssetUsdPrice('UNKNOWNTOKEN')).toBeNull();
+  });
+});
+
+describe('getAssetUsdValue', () => {
+  it('returns price * balance for priced assets', () => {
+    expect(getAssetUsdValue('cirBTC', '0.0002')).toBe(13);
+  });
+
+  it('returns null for symbols with no price', () => {
+    expect(getAssetUsdValue('ARC', '10')).toBeNull();
+  });
+
+  it('returns balance unchanged (price=1) for USDC', () => {
+    expect(getAssetUsdValue('USDC', '38.894348')).toBe(38.894348);
+  });
+
+  it('returns balance * EUR/USD rate for EURC', () => {
+    // 34 EURC * 1.08 EUR/USD rate = 36.72 USD
+    expect(getAssetUsdValue('EURC', '34.00')).toBe(36.72);
+  });
+
+  it('returns null for non-numeric balances without NaN leakage', () => {
+    expect(getAssetUsdValue('cirBTC', 'not-a-number')).toBeNull();
+  });
+});
+
+describe('portfolio value calculation with mixed assets (new pricing)', () => {
+  it('sums USD values across all priced assets, treating unpriced assets as $0', () => {
+    const mixedAssets = [
+      { key: 'usdc', symbol: 'USDC', balance: '38.894348', decimals: 6 },
+      { key: 'eurc', symbol: 'EURC', balance: '39.000000', decimals: 6 },
+      { key: 'cirbtc', symbol: 'cirBTC', balance: '0.0002', decimals: 8 },
+      { key: 'arc', symbol: 'ARC', balance: '100', decimals: 18 },
+    ];
+
+    // Mimics the App.tsx totalPortfolioValue reduce using getAssetUsdValue
+    const portfolioValue = mixedAssets.reduce((total, asset) => {
+      const value = getAssetUsdValue(asset.symbol, asset.balance);
+      return total + (value ?? 0);
+    }, 0);
+
+    // USDC: 38.894348 * 1 = 38.894348
+    // EURC: 39.000000 * 1.08 = 42.12
+    // cirBTC: 0.0002 * 65000 = 13
+    // ARC: null -> 0
+    // Total: 38.894348 + 42.12 + 13 = 94.014348
+    const usdcValue = 38.894348 * 1;
+    const eurcValue = 39.000000 * 1.08;
+    const cirBTCEstimate = 0.0002 * 65000;
+    expect(portfolioValue).toBeCloseTo(usdcValue + eurcValue + cirBTCEstimate, 6);
+
+    // Formatted for display
+    const formattedPortfolioValue = formatDisplayBalance(portfolioValue);
+    expect(formattedPortfolioValue).toBe('94.01');
+
+    // ARC must not break or poison the sum
+    expect(Number.isFinite(portfolioValue)).toBe(true);
+  });
+});
+
+});
