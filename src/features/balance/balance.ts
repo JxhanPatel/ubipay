@@ -133,7 +133,7 @@ export const parseTransactionDirection = (walletAddress: string, from: string, t
   return 'sent';
 };
 
-export const getTransactionDisplayMeta = (transaction: Record<string, unknown>, walletAddress?: string) => {
+export const getTransactionDisplayMeta = (transaction: Record<string, unknown>, walletAddress?: string, nativeSymbol?: string) => {
   const tokenPayload = isObjectRecord(transaction.token) ? transaction.token : null;
   const tokenTransfers = Array.isArray(transaction.token_transfers)
     ? transaction.token_transfers.filter(isObjectRecord)
@@ -150,7 +150,7 @@ export const getTransactionDisplayMeta = (transaction: Record<string, unknown>, 
     const nativeValue = String(transaction.value ?? transaction.amount ?? '0');
     const rawValue = toBigInt(nativeValue);
     return {
-      symbol: 'USDC',
+      symbol: nativeSymbol ?? 'USDC',
       decimals: 18,
       rawValue,
     };
@@ -357,17 +357,18 @@ export const buildRequestLink = (id: string, amount: string, note = '') => {
   return buildDeepLinkRequestLink(id, amount, note);
 };
 
-export const filterNonZeroAssetBalances = (assets: AssetBalance[]) => {
+export const filterNonZeroAssetBalances = (assets: AssetBalance[], nativeSymbol?: string) => {
   const nonZeroAssets = assets.filter((asset) => {
     const normalized = Number(asset.balance);
     return Number.isFinite(normalized) && normalized > 0;
   });
 
+  const primarySymbol = nativeSymbol ?? 'USDC';
   return nonZeroAssets.sort((left, right) => {
-    if (left.symbol === 'USDC') {
+    if (left.symbol === primarySymbol) {
       return -1;
     }
-    if (right.symbol === 'USDC') {
+    if (right.symbol === primarySymbol) {
       return 1;
     }
     return 0;

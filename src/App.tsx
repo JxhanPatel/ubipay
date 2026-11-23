@@ -101,7 +101,7 @@ import {
   type AccountMeta,
 } from './features/accounts/accounts';
 import { Swap } from './components/Swap';
-import { getChainConfig, getAllChains, getExplorerUrl, formatTxExplorerUrl } from './config/chains';
+import { getChainConfig, getAllChains, getExplorerUrl, formatTxExplorerUrl, getTokenAddress } from './config/chains';
 
 const ARC_RPC_URL = 'https://rpc.testnet.arc.io';
 const ARC_CHAIN_ID = 5042002;
@@ -146,12 +146,14 @@ export const buildSendTransactionPlan = (
   sendAmount: string,
   chainKey?: string,
 ): SendAssetPlan => {
-  const chainConfig = getChainConfig(chainKey ?? 'arc-testnet');
+  const resolvedChainKey = chainKey ?? 'arc-testnet';
+  const chainConfig = getChainConfig(resolvedChainKey);
 
-  // On the chain whose native currency matches selectedSendAsset.symbol, send natively
+  // Native path: symbol matches the chain's native gas currency (USDC on Arc,
+  // tQDAY on Aevum). Always use the chain's configured native decimals.
   if (selectedSendAsset.symbol === chainConfig?.nativeCurrency?.symbol) {
-    // Native value on Arc is always 18-decimal EVM base units, regardless of USDC's 6 display decimals.
-    const value = ethers.parseUnits(sendAmount, NATIVE_VALUE_DECIMALS);
+    const nativeDecimals = chainConfig?.nativeCurrency?.decimals ?? NATIVE_VALUE_DECIMALS;
+    const value = ethers.parseUnits(sendAmount, nativeDecimals);
     return {
       kind: 'native',
       tx: {
@@ -161,12 +163,20 @@ export const buildSendTransactionPlan = (
     };
   }
 
-  // On Aevum (or any chain where USDC is not native), treat send assets as ERC-20 transfers.
-  // This naturally includes tUSD8 on Aevum Testnet.
+  // Token path: ERC-20 transfer. This naturally includes tUSD8 on Aevum Testnet.
   const decimals = selectedSendAsset.decimals ?? getAssetDecimals(selectedSendAsset.symbol);
   const value = ethers.parseUnits(sendAmount, decimals);
 
-  const tokenAddress = selectedSendAsset.key;
+  // Prefer the address carried by the asset (from the explorer), but fall back to
+  // the chain registry / env-configured address when the key is not a contract
+  // address (e.g. a leaked native-tqday key).
+  let tokenAddress = selectedSendAsset.key;
+  if (!/^0x[a-fA-F0-9]{40}$/.test(tokenAddress)) {
+    const configuredAddress = getTokenAddress(resolvedChainKey, selectedSendAsset.symbol);
+    if (configuredAddress && /^0x[a-fA-F0-9]{40}$/.test(configuredAddress)) {
+      tokenAddress = configuredAddress;
+    }
+  }
   if (!/^0x[a-fA-F0-9]{40}$/.test(tokenAddress)) {
     throw new Error(`Unable to determine the ${selectedSendAsset.symbol} contract address.`);
   }
@@ -628,6 +638,7 @@ export const fetchTransactionHistory = async (address: string, chainKey?: string
   const activeChainConfig = getChainConfig(chainKey ?? 'arc-testnet');
   const explorerApiUrl = activeChainConfig?.apiUrl ?? ARC_EXPLORER_API_URL;
   const resolvedChainKey = chainKey ?? 'arc-testnet';
+  const nativeSymbol = activeChainConfig?.nativeCurrency?.symbol ?? 'USDC';
   
   const normalizedAddress = String(address ?? '').trim();
   if (!normalizedAddress) {
@@ -722,7 +733,7 @@ export const fetchTransactionHistory = async (address: string, chainKey?: string
           ?? (sourceItem.receiver as string | undefined)
           ?? '',
       );
-      const displayMeta = getTransactionDisplayMeta(sourceItem as Record<string, unknown>, normalizedAddress);
+      const displayMeta = getTransactionDisplayMeta(sourceItem as Record<string, unknown>, normalizedAddress, nativeSymbol);
       const status = normalizeExplorerStatus(String(sourceItem.status ?? sourceItem.tx_status ?? sourceItem.state ?? 'ok'));
       const rawTimestamp = Number(
         sourceItem.timestamp
@@ -1282,8 +1293,23 @@ function App() {
   const provider = useMemo(() => {
     const activeChainConfig = getChainConfig(activeChainKey ?? 'arc-testnet');
     const rpcUrls = activeChainConfig?.rpcUrls;
-    return rpcUrls && rpcUrls.length > 0 ? new ethers.JsonRpcProvider(rpcUrls[0]) : new ethers.JsonRpcProvider(ARC_RPC_URL);
+    const chainId = activeChainConfig?.chainId ?? ARC_CHAIN_ID;
+    // Pin the provider to the active chain so sends are never detected as being
+    // on the wrong network (e.g. after an Arc -> Aevum network switch).
+    return rpcUrls && rpcUrls.length > 0
+      ? new ethers.JsonRpcProvider(rpcUrls[0], chainId, { staticNetwork: true })
+      : new ethers.JsonRpcProvider(ARC_RPC_URL, ARC_CHAIN_ID, { staticNetwork: true });
   }, [activeChainKey]);
+
+  // Keep the wallet bound to the provider of the currently active chain.
+  // The provider is recreated when the user switches networks (e.g. Arc -> Aevum),
+  // but the stored wallet keeps the provider it was originally unlocked with.
+  // Without rebinding, all subsequent sends would broadcast on the wrong chain.
+  useEffect(() => {
+    if (!wallet) return;
+    if (wallet.provider === provider) return;
+    setWallet(wallet.connect(provider));
+  }, [provider, wallet]);
 
   // .arc identity for the active wallet — reverse-resolved once on unlock, then
   // used as the live hero element on the dashboard (large serif handle reveal).
@@ -1904,7 +1930,7 @@ function App() {
     const merged = nativeUsdc
       ? [nativeUsdc, ...tokenAssets.filter((t) => t.symbol !== nativeSymbol)]
       : tokenAssets;
-    const filtered = filterNonZeroAssetBalances(merged);
+    const filtered = filterNonZeroAssetBalances(merged, nativeSymbol);
     // Ensure we always have at least one asset (native) as fallback
     return filtered.length > 0 
       ? (filtered as unknown as AssetOption[]) 
@@ -1965,7 +1991,7 @@ function App() {
     const merged = nativeUsdc
       ? [nativeUsdc, ...tokenAssets.filter((t) => t.symbol !== nativeSymbol)]
       : tokenAssets;
-    const filtered = filterNonZeroAssetBalances(merged);
+    const filtered = filterNonZeroAssetBalances(merged, nativeSymbol);
     return filtered.length > 0 
       ? (filtered as unknown as AssetOption[]) 
       : [{ key: nativeSymbol.toLowerCase(), symbol: nativeSymbol, balance: '0', decimals: nativeDecimals }];
@@ -2711,9 +2737,9 @@ function App() {
         {/* Header */}
         <header className="flex items-center justify-between py-1.5 px-2">
           <div className="flex items-center gap-2.5">
-            <img src={logoUrl} alt="ArcPay" width={36} height={36} className="h-9 w-9 object-contain" />
+            <img src={logoUrl} alt="UbiPay" width={36} height={36} className="h-9 w-9 object-contain" />
             <div className="flex flex-col leading-tight flex">
-              <span className="text-heading font-display font-bold text-[#F5F3FF] text-base sm:text-heading">ArcPay</span>
+              <span className="text-heading font-display font-bold text-[#F5F3FF] text-base sm:text-heading">UbiPay</span>
               <button
                 type="button"
                 onClick={() => setShowAccountMenu((prev) => !prev)}
