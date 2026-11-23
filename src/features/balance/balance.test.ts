@@ -240,13 +240,13 @@ describe('getTransactionDisplayMeta', () => {
 describe('buildRequestLink', () => {
   it('builds a request deep link with URL-encoded note text and a positive amount', () => {
     expect(buildRequestLink('0x1234567890abcdef1234567890abcdef12345678', '12.50', 'Dinner Split')).toBe(
-      'arcpay://request?id=0x1234567890abcdef1234567890abcdef12345678&amount=12.50&note=Dinner%20Split',
+      'ubipay://request?id=0x1234567890abcdef1234567890abcdef12345678&amount=12.50&note=Dinner+Split',
     );
   });
 
   it('omits the note parameter entirely when the note is empty', () => {
     expect(buildRequestLink('0x1234567890abcdef1234567890abcdef12345678', '12.50', '')).toBe(
-      'arcpay://request?id=0x1234567890abcdef1234567890abcdef12345678&amount=12.50',
+      'ubipay://request?id=0x1234567890abcdef1234567890abcdef12345678&amount=12.50',
     );
   });
 });

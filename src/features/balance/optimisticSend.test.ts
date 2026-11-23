@@ -44,6 +44,7 @@ describe('optimistic native USDC send (plan.kind === "native")', () => {
     balance: '10.5',
     assetBalances,
     tokenAssets: [],
+    chainKey: 'arc-testnet',
   });
 
   it('synthesizes a confirming history item with the tx hash before any explorer poll runs', () => {
@@ -100,6 +101,7 @@ describe('optimistic ERC-20 (EURC) send', () => {
     balance: '12',
     assetBalances: [],
     tokenAssets,
+    chainKey: 'arc-testnet',
   });
 
   it('synthesizes a confirming history item using the token decimals', () => {
@@ -135,6 +137,7 @@ describe('confirmation path (explorer returns status ok for the hash)', () => {
     balance: '10.5',
     assetBalances: [{ key: 'native-usdc', symbol: 'USDC', balance: '10.5', decimals: 18 }],
     tokenAssets: [],
+    chainKey: 'arc-testnet',
   });
 
   const realItem: TransactionHistoryItem = {
@@ -182,6 +185,7 @@ describe('revert path (explorer returns status error for the hash)', () => {
     balance: '12',
     assetBalances: [{ key: EURC_ADDRESS, symbol: 'EURC', balance: '2.5', decimals: 6 }],
     tokenAssets: [{ key: EURC_ADDRESS, symbol: 'EURC', balance: '2.5', decimals: 6 }],
+    chainKey: 'arc-testnet',
   });
 
   // Rollback exactly as rollbackOptimisticSend does in the component:
@@ -216,6 +220,7 @@ describe('dedupe during mid-flight explorer refreshes', () => {
     balance: '10.5',
     assetBalances: [],
     tokenAssets: [],
+    chainKey: 'arc-testnet',
   }).historyItem;
 
   const olderConfirmed: TransactionHistoryItem = {

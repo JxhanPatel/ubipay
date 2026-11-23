@@ -24,7 +24,7 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
   const setPersistedTheme = (next: 'light' | 'dark') => {
     applyTheme(next);
     try {
-      localStorage.setItem('arc_theme', next);
+      localStorage.setItem('ubipay_theme', next);
     } catch {
       // ignore
     }
@@ -32,7 +32,7 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
 
   // If the user hasn't chosen a theme, follow system preference live.
   useEffect(() => {
-    const stored = localStorage.getItem('arc_theme');
+    const stored = localStorage.getItem('ubipay_theme');
     if (stored) return;
 
     const mq = window.matchMedia('(prefers-color-scheme: dark)');

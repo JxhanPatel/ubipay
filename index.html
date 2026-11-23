@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#C2885B" />
-    <title>ArcPay | Arc Wallet</title>
+    <title>UbiPay | Ubi Wallet</title>
     <link rel="icon" type="image/png" href="/src/assets/logo-for-qr.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -12,7 +12,7 @@
     <script>
       (function () {
         try {
-          var key = 'arc_theme';
+          var key = 'ubipay_theme';
           var stored = null;
           try { stored = localStorage.getItem(key); } catch (e) {}
           var theme = stored === 'light' || stored === 'dark' ? stored : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');

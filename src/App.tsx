@@ -7,6 +7,7 @@ import {
   ArrowUpDown,
   ArrowUpRight,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
   Clock,
   Copy,
@@ -32,6 +33,8 @@ import logoForQrUrl from './assets/logo-for-qr.png';
 import usdcSvg from './assets/usdc.svg';
 import eurcSvg from './assets/eurc.svg';
 import cirbtcSvg from './assets/cirbtc.svg';
+import qdayLogo from './assets/qday.png';
+import usd8Logo from './assets/usd8.png';
 import { QRCodeSVG } from 'qrcode.react';
 import { BrowserQRCodeReader } from '@zxing/browser';
 import {
@@ -98,20 +101,28 @@ import {
   type AccountMeta,
 } from './features/accounts/accounts';
 import { Swap } from './components/Swap';
+import { getChainConfig, getAllChains, getExplorerUrl, formatTxExplorerUrl } from './config/chains';
 
 const ARC_RPC_URL = 'https://rpc.testnet.arc.io';
 const ARC_CHAIN_ID = 5042002;
 const ARC_NETWORK_NAME = 'Arc Testnet';
 const ARC_CURRENCY_SYMBOL = 'USDC';
-const EXPLORER_URL = 'https://explorer.testnet.arc.io';
 const ARC_EXPLORER_API_URL = 'https://explorer.testnet.arc.io/api/v2';
 const NATIVE_VALUE_DECIMALS = 18;
+
+// Chain-aware explorer URL for transaction links — uses the currently active chain.
+const getExplorerUrlForChain = (chainKey: string) => {
+  const chain = getChainConfig(chainKey);
+  return chain?.explorerUrl ?? 'https://testnet.arcscan.app';
+};
 export const ERC20_TRANSFER_ABI = ['function transfer(address to, uint256 amount) returns (bool)'];
 const ASSET_ICON_URLS: Record<string, string> = {
   USDC: usdcSvg,
   EURC: eurcSvg,
   cirBTC: cirbtcSvg,
   CIRBTC: cirbtcSvg,
+  tQDAY: qdayLogo,
+  tUSD8: usd8Logo,
 };
 
 export type SendAssetPlan =
@@ -133,8 +144,12 @@ export const buildSendTransactionPlan = (
   selectedSendAsset: { key: string; symbol: string; balance: string; decimals?: number },
   resolvedRecipient: string,
   sendAmount: string,
+  chainKey?: string,
 ): SendAssetPlan => {
-  if (selectedSendAsset.symbol === 'USDC') {
+  const chainConfig = getChainConfig(chainKey ?? 'arc-testnet');
+
+  // On the chain whose native currency matches selectedSendAsset.symbol, send natively
+  if (selectedSendAsset.symbol === chainConfig?.nativeCurrency?.symbol) {
     // Native value on Arc is always 18-decimal EVM base units, regardless of USDC's 6 display decimals.
     const value = ethers.parseUnits(sendAmount, NATIVE_VALUE_DECIMALS);
     return {
@@ -146,8 +161,9 @@ export const buildSendTransactionPlan = (
     };
   }
 
-  // ERC-20 token transfers use the token's own decimals (e.g. 6 for EURC).
-  const decimals = selectedSendAsset.decimals ?? 6;
+  // On Aevum (or any chain where USDC is not native), treat send assets as ERC-20 transfers.
+  // This naturally includes tUSD8 on Aevum Testnet.
+  const decimals = selectedSendAsset.decimals ?? getAssetDecimals(selectedSendAsset.symbol);
   const value = ethers.parseUnits(sendAmount, decimals);
 
   const tokenAddress = selectedSendAsset.key;
@@ -195,9 +211,13 @@ export type OptimisticSendUpdate = {
   nextTokenAssets: SendableAssetEntry[];
 };
 
-// State keys that can all refer to the native USDC entry depending on where it
-// came from ('usdc' is the initial default, 'native-usdc' the refreshed one).
-const NATIVE_USDC_KEYS = ['usdc', 'native-usdc'];
+// State keys that can all refer to the native entry depending on the active chain.
+const getNativeAssetKeys = (chainKey: string) => {
+  const chainConfig = getChainConfig(chainKey);
+  const nativeSymbol = chainConfig?.nativeCurrency?.symbol ?? 'USDC';
+  const nativeKey = `native-${nativeSymbol.toLowerCase()}`;
+  return [nativeSymbol.toLowerCase(), nativeKey];
+};
 
 const parseDisplayedToRaw = (displayed: string, decimals: number) => {
   const normalized = String(displayed ?? '').replace(/,/g, '').trim() || '0';
@@ -252,8 +272,9 @@ export const createOptimisticSendUpdate = (input: {
   balance: string;
   assetBalances: SendableAssetEntry[];
   tokenAssets: SendableAssetEntry[];
+  chainKey: string;
 }): OptimisticSendUpdate => {
-  const { hash, from, to, assetKey, symbol, amount, decimals } = input;
+  const { hash, from, to, assetKey, symbol, amount, decimals, chainKey } = input;
 
   // Snapshot BEFORE applying any decrement so a revert can restore the exact
   // pre-send values rather than recomputing them.
@@ -282,21 +303,26 @@ export const createOptimisticSendUpdate = (input: {
     status: 'confirming',
   };
 
+  const chainConfig = getChainConfig(chainKey);
+  const nativeSymbol = chainConfig?.nativeCurrency?.symbol ?? 'USDC';
+  const isNativeSend = symbol === nativeSymbol || assetKey.startsWith('native-');
+  const nativeAssetKeys = getNativeAssetKeys(chainKey);
+
   return {
     historyItem,
     snapshot,
-    // `balance` backs the native USDC figure (formatted from 18-decimal base
-    // units by parseNativeBalance), so it is only decremented for USDC sends.
+    // `balance` backs the native currency figure (formatted from 18-decimal base
+    // units by parseNativeBalance), so it is only decremented for native sends.
     nextBalance:
-      symbol === 'USDC' ? decrementDisplayedBalance(input.balance, amount, decimals) : input.balance,
+      isNativeSend ? decrementDisplayedBalance(input.balance, amount, decimals) : input.balance,
     nextAssetBalances: applyOptimisticAssetDecrement(
       input.assetBalances,
-      symbol === 'USDC' ? [...NATIVE_USDC_KEYS, assetKey] : [assetKey],
+      isNativeSend ? [...nativeAssetKeys, assetKey] : [assetKey],
       amount,
     ),
     nextTokenAssets: applyOptimisticAssetDecrement(
       input.tokenAssets,
-      symbol === 'USDC' ? [...NATIVE_USDC_KEYS, assetKey] : [assetKey],
+      isNativeSend ? [...nativeAssetKeys, assetKey] : [assetKey],
       amount,
     ),
   };
@@ -507,8 +533,10 @@ const isObjectRecord = (value: unknown): value is Record<string, unknown> => {
   return isPlainObject(value);
 };
 
-const fetchTransactionDetail = async (hash: string) => {
-  const detailResponse = await fetch(`${ARC_EXPLORER_API_URL}/transactions/${hash}`);
+const fetchTransactionDetail = async (hash: string, chainKey?: string) => {
+  const chainConfig = getChainConfig(chainKey ?? 'arc-testnet');
+  const explorerApiUrl = chainConfig?.apiUrl ?? ARC_EXPLORER_API_URL;
+  const detailResponse = await fetch(`${explorerApiUrl}/transactions/${hash}`);
   if (!detailResponse.ok) {
     return null;
   }
@@ -596,15 +624,19 @@ const groupSwapPairs = (items: TransactionHistoryItem[]): TransactionHistoryItem
   return grouped;
 };
 
-export const fetchTransactionHistory = async (address: string): Promise<TransactionHistoryItem[]> => {
+export const fetchTransactionHistory = async (address: string, chainKey?: string): Promise<TransactionHistoryItem[]> => {
+  const activeChainConfig = getChainConfig(chainKey ?? 'arc-testnet');
+  const explorerApiUrl = activeChainConfig?.apiUrl ?? ARC_EXPLORER_API_URL;
+  const resolvedChainKey = chainKey ?? 'arc-testnet';
+  
   const normalizedAddress = String(address ?? '').trim();
   if (!normalizedAddress) {
     return [];
   }
 
-  const explorerResponse = await fetch(`${ARC_EXPLORER_API_URL}/addresses/${normalizedAddress}/transactions`);
+  const explorerResponse = await fetch(`${explorerApiUrl}/addresses/${normalizedAddress}/transactions`);
   if (!explorerResponse.ok) {
-    throw new Error('Unable to load transaction history from Arc explorer.');
+    throw new Error(`Unable to load transaction history from ${activeChainConfig?.name ?? 'chain'} explorer.`);
   }
 
   const payload = await explorerResponse.json();
@@ -665,7 +697,7 @@ export const fetchTransactionHistory = async (address: string): Promise<Transact
       // When a swap leg has only one transfer listed but it's a token_transfer,
       // the explorer detail may carry the full multi-transfer payload (USDC out + EURC in).
       const detailItem = hasTokenTransferType && hash
-        ? await fetchTransactionDetail(hash)
+        ? await fetchTransactionDetail(hash, resolvedChainKey)
         : null;
       const sourceItem = detailItem && isPlainObject(detailItem) ? detailItem : item;
       // Skip if detailed source reveals an approve transaction
@@ -750,7 +782,8 @@ export const parseScanPayload = (rawInput: string): ScanPayload | null => {
 
   try {
     const parsed = new URL(trimmed);
-    if (parsed.protocol !== 'arcpay:') {
+    const protocol = parsed.protocol.toLowerCase();
+    if (protocol !== 'ubipay:' && protocol !== 'arcpay:') {
       return null;
     }
 
@@ -1108,13 +1141,17 @@ function App() {
   const [showContacts, setShowContacts] = useState(false);
   const [showContactPicker, setShowContactPicker] = useState(false);
   const [confirmRemoval, setConfirmRemoval] = useState(false);
+  const [showNetworkMenu, setShowNetworkMenu] = useState(false);
+  const [activeChainKey, setActiveChain] = useState<'arc-testnet' | 'aevum-testnet'>('arc-testnet');
   const [contacts, setContacts] = useState<Contact[]>(getContacts());
   const [transactions, setTransactions] = useState<TransactionHistoryItem[]>([]);
   const [isHistoryLoading, setIsHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [sendAddress, setSendAddress] = useState('');
   const [sendAmount, setSendAmount] = useState('');
-  const [sendAssetKey, setSendAssetKey] = useState('usdc');
+  const defaultChainConfigForSend = getChainConfig(activeChainKey ?? 'arc-testnet');
+  const defaultNativeSymbolForSend = defaultChainConfigForSend?.nativeCurrency?.symbol ?? 'USDC';
+  const [sendAssetKey, setSendAssetKey] = useState(`native-${defaultNativeSymbolForSend.toLowerCase()}`);
   const [sendReview, setSendReview] = useState(false);
   const [gasFeeEstimate, setGasFeeEstimate] = useState<string | null>(null);
 
@@ -1134,7 +1171,9 @@ function App() {
   const [recipientResolutionStatus, setRecipientResolutionStatus] = useState<'idle' | 'checking' | 'resolved' | 'unsupported'>('idle');
   const [showFullRecipient, setShowFullRecipient] = useState(false);
   const [sendAmountError, setSendAmountError] = useState('');
-  const [requestAssetKey, setRequestAssetKey] = useState('native-usdc');
+  const activeChainConfig = getChainConfig(activeChainKey ?? 'arc-testnet');
+  const nativeSymbol = activeChainConfig?.nativeCurrency?.symbol ?? 'USDC';
+  const [requestAssetKey, setRequestAssetKey] = useState(`native-${nativeSymbol.toLowerCase()}`);
   const [requestAmount, setRequestAmount] = useState('');
   const [requestNote, setRequestNote] = useState('');
   const [requestAmountError, setRequestAmountError] = useState('');
@@ -1144,8 +1183,11 @@ function App() {
   const [txConfirmationTimedOut, setTxConfirmationTimedOut] = useState(false);
   const [txErrorDetail, setTxErrorDetail] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const defaultChainConfig = getChainConfig('arc-testnet');
+  const defaultNativeSymbol = defaultChainConfig?.nativeCurrency?.symbol ?? 'USDC';
+  const defaultNativeDecimals = defaultChainConfig?.nativeCurrency?.decimals ?? 18;
   const [assetBalances, setAssetBalances] = useState<Array<{ key: string; symbol: string; balance: string; decimals: number }>>([
-    { key: 'usdc', symbol: 'USDC', balance, decimals: 6 },
+    { key: `native-${defaultNativeSymbol.toLowerCase()}`, symbol: defaultNativeSymbol, balance, decimals: defaultNativeDecimals },
   ]);
   const [tokenAssets, setTokenAssets] = useState<Array<{ key: string; symbol: string; balance: string; decimals: number }>>([]);
   const [resolvedSendAddress, setResolvedSendAddress] = useState<string | null>(null);
@@ -1237,7 +1279,11 @@ function App() {
   // without ever re-prompting the user. Cleared on lock/logout.
   const sessionPinRef = useRef<string>('');
 
-  const provider = useMemo(() => new ethers.JsonRpcProvider(ARC_RPC_URL), []);
+  const provider = useMemo(() => {
+    const activeChainConfig = getChainConfig(activeChainKey ?? 'arc-testnet');
+    const rpcUrls = activeChainConfig?.rpcUrls;
+    return rpcUrls && rpcUrls.length > 0 ? new ethers.JsonRpcProvider(rpcUrls[0]) : new ethers.JsonRpcProvider(ARC_RPC_URL);
+  }, [activeChainKey]);
 
   // .arc identity for the active wallet — reverse-resolved once on unlock, then
   // used as the live hero element on the dashboard (large serif handle reveal).
@@ -1260,7 +1306,7 @@ function App() {
     };
   }, [wallet, provider]);
 
-  const refreshBalance = async (currentWallet?: ArcWallet | null) => {
+  const refreshBalance = async (currentWallet?: ArcWallet | null, chainKeyOverride?: string) => {
     const targetWallet = currentWallet ?? wallet;
     if (!targetWallet) return;
     setIsLoading(true);
@@ -1269,24 +1315,30 @@ function App() {
       const address = targetWallet.address;
 
       // Fetch both native balance and token balances in parallel
+      const resolvedChainKey = chainKeyOverride ?? activeChainKey;
+      const activeChainConfig = getChainConfig(resolvedChainKey);
+      const explorerApiUrl = activeChainConfig?.apiUrl ?? ARC_EXPLORER_API_URL;
+
       const [nativeResponse, tokenResponse] = await Promise.all([
-        fetch(`${ARC_EXPLORER_API_URL}/addresses/${address}`),
-        fetch(`${ARC_EXPLORER_API_URL}/addresses/${address}/token-balances`),
+        fetch(`${explorerApiUrl}/addresses/${address}`),
+        fetch(`${explorerApiUrl}/addresses/${address}/token-balances`),
       ]);
 
       if (!nativeResponse.ok) {
-        throw new Error('Unable to fetch native balance from Arc explorer.');
+        throw new Error(`Unable to fetch native balance from ${activeChainConfig?.name ?? 'chain'} explorer.`);
       }
       if (!tokenResponse.ok) {
-        throw new Error('Unable to fetch token balances from Arc explorer.');
+        throw new Error(`Unable to fetch token balances from ${activeChainConfig?.name ?? 'chain'} explorer.`);
       }
 
       const nativePayload = await nativeResponse.json();
       const tokenPayload = await tokenResponse.json();
 
-      // Parse native balance (18 decimals, USDC gas token)
+      // Parse native balance (18 decimals, native gas token).
+      // The native currency symbol is chain-aware: USDC on Arc, tQDAY on Aevum.
+      const nativeSymbol = activeChainConfig?.nativeCurrency?.symbol ?? 'USDC';
       const nativeBalance = parseNativeBalance(nativePayload, address);
-      const nativeUsdcBalance = nativeBalance?.coinBalanceFormatted ?? '0';
+      const nativeBalanceFormatted = nativeBalance?.coinBalanceFormatted ?? '0';
 
       // Parse token balances (ERC-20 tokens)
       const tokenBalances = parseTokenBalances(tokenPayload, address);
@@ -1303,21 +1355,22 @@ function App() {
 
       // Set the primary balance to native USDC (coin_balance)
       // This is what funds sends and pays gas
-      setBalance(nativeUsdcBalance);
+      setBalance(nativeBalanceFormatted);
 
       // Store token assets separately
       setTokenAssets(normalizedAssets);
 
-      // Combine native USDC with token assets for asset balances display
-      // Native USDC should be first since it's the primary balance
+      // Combine native currency with token assets for asset balances display
+      // Native currency should be first since it's the primary balance
+      const nativeDecimals = activeChainConfig?.nativeCurrency?.decimals ?? 18;
       const assetBalancesWithNative = [
         {
-          key: 'native-usdc',
-          symbol: 'USDC',
-          balance: nativeUsdcBalance,
-          decimals: 18,
+          key: `native-${nativeSymbol.toLowerCase()}`,
+          symbol: nativeSymbol,
+          balance: nativeBalanceFormatted,
+          decimals: nativeDecimals,
         },
-        ...normalizedAssets.filter((asset) => asset.symbol !== 'USDC'),
+        ...normalizedAssets.filter((asset) => asset.symbol !== nativeSymbol),
       ];
 
       setAssetBalances(assetBalancesWithNative);
@@ -1328,14 +1381,15 @@ function App() {
     }
   };
 
-  const refreshTransactionHistory = async (currentWallet?: ArcWallet | null) => {
+  const refreshTransactionHistory = async (currentWallet?: ArcWallet | null, chainKeyOverride?: string) => {
     const targetWallet = currentWallet ?? wallet;
     if (!targetWallet) return;
     setIsHistoryLoading(true);
     setHistoryError(null);
 
     try {
-      const nextTransactions = await fetchTransactionHistory(targetWallet.address);
+      const resolvedChainKey = chainKeyOverride ?? activeChainKey;
+    const nextTransactions = await fetchTransactionHistory(targetWallet.address, resolvedChainKey);
       // Merge (not replace): any still-'confirming' optimistic item whose hash
       // has not shown up on-chain yet stays pinned at the top; once the
       // explorer returns the real record for a hash it wins, so we never end
@@ -1351,13 +1405,14 @@ function App() {
     }
   };
 
-  const refreshWalletData = async (currentWallet?: ArcWallet | null) => {
+  const refreshWalletData = async (currentWallet?: ArcWallet | null, chainKeyOverride?: string) => {
     const targetWallet = currentWallet ?? wallet;
     if (!targetWallet) return;
 
+    const resolvedChainKey = chainKeyOverride ?? activeChainKey;
     await Promise.all([
-      refreshBalance(targetWallet),
-      refreshTransactionHistory(targetWallet),
+      refreshBalance(targetWallet, resolvedChainKey),
+      refreshTransactionHistory(targetWallet, resolvedChainKey),
     ]);
   };
 
@@ -1722,10 +1777,11 @@ function App() {
   const openSendModal = (scanDetails?: { recipient?: string; amount?: string; note?: string; presetAssetKey?: string }) => {
     const allAssets = [...tokenAssets, ...assetBalances];
     const presetKey = scanDetails?.presetAssetKey;
+    const chainConfig = getChainConfig(activeChainKey);
     const defaultAsset = (presetKey ? allAssets.find((asset) => asset.key === presetKey) : null)
-      ?? allAssets.find((asset) => asset.symbol === 'USDC')
+      ?? allAssets.find((asset) => asset.symbol === chainConfig?.nativeCurrency?.symbol)
       ?? allAssets.find((asset) => Number(asset.balance) > 0)
-      ?? { key: 'usdc', symbol: 'USDC', balance: '0', decimals: 6 };
+      ?? { key: `native-${chainConfig?.nativeCurrency?.symbol?.toLowerCase() ?? 'usdc'}`, symbol: chainConfig?.nativeCurrency?.symbol ?? 'USDC', balance: '0', decimals: chainConfig?.nativeCurrency?.decimals ?? 6 };
 
     setSendAssetKey(defaultAsset.key);
     setSendAddress(scanDetails?.recipient ?? '');
@@ -1841,23 +1897,28 @@ function App() {
   };
 
   const requestAssets: AssetOption[] = useMemo(() => {
-    // Always include native USDC first so users can always select USDC
-    const nativeUsdc = assetBalances.find((asset) => asset.symbol === 'USDC');
+    const chainConfig = getChainConfig(activeChainKey);
+    const nativeSymbol = chainConfig?.nativeCurrency?.symbol ?? 'USDC';
+    const nativeDecimals = chainConfig?.nativeCurrency?.decimals ?? 18;
+    const nativeUsdc = assetBalances.find((asset) => asset.symbol === nativeSymbol);
     const merged = nativeUsdc
-      ? [nativeUsdc, ...tokenAssets.filter((t) => t.symbol !== 'USDC')]
+      ? [nativeUsdc, ...tokenAssets.filter((t) => t.symbol !== nativeSymbol)]
       : tokenAssets;
     const filtered = filterNonZeroAssetBalances(merged);
-    // Ensure we always have at least one asset (USDC as fallback)
+    // Ensure we always have at least one asset (native) as fallback
     return filtered.length > 0 
       ? (filtered as unknown as AssetOption[]) 
-      : [{ key: 'usdc', symbol: 'USDC', balance: '0', decimals: 6 }];
-  }, [assetBalances, tokenAssets]);
+      : [{ key: nativeSymbol.toLowerCase(), symbol: nativeSymbol, balance: '0', decimals: nativeDecimals }];
+  }, [assetBalances, tokenAssets, activeChainKey]);
 
   const openRequestModal = () => {
-    const defaultAsset = requestAssets.find((asset) => asset.symbol === 'USDC')
+    const chainConfig = getChainConfig(activeChainKey);
+    const nativeSymbol = chainConfig?.nativeCurrency?.symbol ?? 'USDC';
+    const nativeDecimals = chainConfig?.nativeCurrency?.decimals ?? 18;
+    const defaultAsset = requestAssets.find((asset) => asset.symbol === nativeSymbol)
       ?? requestAssets.find((asset) => Number(asset.balance) > 0)
-      // Fallback to native USDC even if balance is zero or assets haven't loaded yet
-      ?? { key: 'native-usdc', symbol: 'USDC', balance: '0', decimals: 18 };
+      // Fallback to native currency even if balance is zero or assets haven't loaded yet
+      ?? { key: `native-${nativeSymbol.toLowerCase()}`, symbol: nativeSymbol, balance: '0', decimals: nativeDecimals };
 
     setRequestAssetKey(defaultAsset.key);
     setRequestAmount('');
@@ -1897,31 +1958,35 @@ function App() {
   };
 
   const sendAssets: AssetOption[] = useMemo(() => {
-    // Always include native USDC (the gas asset) so the selector is never empty
-    // and users can always select USDC even when holding other tokens.
-    const nativeUsdc = assetBalances.find((asset) => asset.symbol === 'USDC');
+    const chainConfig = getChainConfig(activeChainKey);
+    const nativeSymbol = chainConfig?.nativeCurrency?.symbol ?? 'USDC';
+    const nativeDecimals = chainConfig?.nativeCurrency?.decimals ?? 18;
+    const nativeUsdc = assetBalances.find((asset) => asset.symbol === nativeSymbol);
     const merged = nativeUsdc
-      ? [nativeUsdc, ...tokenAssets.filter((t) => t.symbol !== 'USDC')]
+      ? [nativeUsdc, ...tokenAssets.filter((t) => t.symbol !== nativeSymbol)]
       : tokenAssets;
     const filtered = filterNonZeroAssetBalances(merged);
-    // Ensure we always have at least one asset (USDC as fallback)
     return filtered.length > 0 
       ? (filtered as unknown as AssetOption[]) 
-      : [{ key: 'usdc', symbol: 'USDC', balance: '0', decimals: 6 }];
-  }, [assetBalances, tokenAssets]);
+      : [{ key: nativeSymbol.toLowerCase(), symbol: nativeSymbol, balance: '0', decimals: nativeDecimals }];
+  }, [assetBalances, tokenAssets, activeChainKey]);
 
   const selectedSendAsset = useMemo(() => {
+    const chainConfig = getChainConfig(activeChainKey);
+    const nativeSymbol = chainConfig?.nativeCurrency?.symbol ?? 'USDC';
     return sendAssets.find((asset) => asset.key === sendAssetKey)
-      ?? sendAssets.find((asset) => asset.symbol === 'USDC')
+      ?? sendAssets.find((asset) => asset.symbol === nativeSymbol)
       ?? sendAssets[0]
-      ?? { key: 'usdc', symbol: 'USDC', balance: '0', decimals: 6 };
+      ?? { key: `native-${nativeSymbol.toLowerCase()}`, symbol: nativeSymbol, balance: '0', decimals: chainConfig?.nativeCurrency?.decimals ?? 6 };
   }, [sendAssetKey, sendAssets]);
 
   const selectedRequestAsset = useMemo(() => {
+    const chainConfig = getChainConfig(activeChainKey);
+    const nativeSymbol = chainConfig?.nativeCurrency?.symbol ?? 'USDC';
     return requestAssets.find((asset) => asset.key === requestAssetKey)
-      ?? requestAssets.find((asset) => asset.symbol === 'USDC')
+      ?? requestAssets.find((asset) => asset.symbol === nativeSymbol)
       ?? requestAssets[0]
-      ?? { key: 'usdc', symbol: 'USDC', balance: '0', decimals: 6 };
+      ?? { key: `native-${nativeSymbol.toLowerCase()}`, symbol: nativeSymbol, balance: '0', decimals: chainConfig?.nativeCurrency?.decimals ?? 6 };
   }, [requestAssetKey, requestAssets]);
 
   const selectedSendAssetDecimals = selectedSendAsset.decimals ?? 6;
@@ -2261,7 +2326,7 @@ function App() {
 
     try {
       const resolvedRecipient = resolvedSendAddress ?? sendTarget;
-      const plan = buildSendTransactionPlan(selectedSendAsset, resolvedRecipient, sendAmount);
+      const plan = buildSendTransactionPlan(selectedSendAsset, resolvedRecipient, sendAmount, activeChainKey);
 
       let gasLimit: bigint;
       if (plan.kind === 'native') {
@@ -2318,7 +2383,7 @@ function App() {
 
     try {
       const resolvedRecipient = await resolveRecipientAddress(sendAddress);
-      const plan = buildSendTransactionPlan(selectedSendAsset, resolvedRecipient, sendAmount);
+      const plan = buildSendTransactionPlan(selectedSendAsset, resolvedRecipient, sendAmount, activeChainKey);
 
       let txHashValue: string;
       if (plan.kind === 'native') {
@@ -2353,6 +2418,7 @@ function App() {
         balance,
         assetBalances,
         tokenAssets,
+        chainKey: activeChainKey,
       });
 
       setTransactions((current) => [
@@ -2361,7 +2427,9 @@ function App() {
       ]);
       setAssetBalances(sendOptimistic.nextAssetBalances);
       setTokenAssets(sendOptimistic.nextTokenAssets);
-      if (selectedSendAsset.symbol === 'USDC') {
+      // Only native sends (plan.kind === 'native') deduct the hero balance;
+      // ERC-20 sends only affect the specific token entry in Holdings.
+      if (isNativeSend) {
         setBalance(sendOptimistic.nextBalance);
       }
 
@@ -2454,7 +2522,16 @@ function App() {
   }, [visibleAssets]);
 
   useEffect(() => {
-    setAssetBalances((current) => current.map((asset) => (asset.key === 'usdc' ? { ...asset, balance } : asset)));
+    setAssetBalances((current) => {
+      const updatedAssets = current.map((asset) => {
+        // Update balance for the native currency asset (key may be 'native-usdc', 'native-tqday', etc.)
+        if (asset.key.startsWith('native-')) {
+          return { ...asset, balance: balance };
+        }
+        return asset;
+      });
+      return updatedAssets;
+    });
   }, [balance]);
 
   useEffect(() => {
@@ -2746,9 +2823,61 @@ function App() {
               </h2>
             </div>
             <div className="flex items-center gap-3 shrink-0">
-              <div className="inline-flex items-center gap-2">
-                <span className="text-xs text-[#A1A1AA] font-medium">Arc Testnet</span>
-                <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)] animate-pulse"></span>
+              {/* Network Switcher */}
+              <div className="relative">
+                <button
+                  onClick={() => setShowNetworkMenu((prev) => !prev)}
+                  className="inline-flex items-center gap-2 rounded-full border border-white/[0.06] bg-[#0F1115] px-3 py-1.5 transition-fast hover:border-[#C2885B]/40 hover:bg-[#C2885B]/[0.08]"
+                  aria-label="Switch network"
+                  aria-expanded={showNetworkMenu}
+                >
+                  <span className="text-xs font-medium text-[#A1A1AA] transition-fast group-hover:text-[#F5F3FF]">
+                    {getChainConfig(activeChainKey)?.shortName ?? 'Arc'}
+                  </span>
+                  <ChevronDown className="h-3 w-3 text-[#71717A] transition-fast" />
+                </button>
+                {showNetworkMenu && (
+                  <div
+                    className="absolute right-0 z-50 mt-1.5 min-w-[150px] rounded-xl border border-white/[0.08] bg-[#0F1115] overflow-hidden surface-with-border"
+                    role="menu"
+                    aria-label="Network selector"
+                  >
+                    <div className="px-3 py-2">
+                      <p className="subhead text-[#71717A] mb-3">Network</p>
+                    </div>
+                    <div className="py-1">
+                      {getAllChains().map((chain) => (
+                        <button
+                          key={chain.id}
+                          type="button"
+                          role="menuitem"
+                          tabIndex={0}
+                          onClick={() => {
+                            setActiveChain(chain.id as 'arc-testnet' | 'aevum-testnet');
+                            void refreshWalletData(undefined, chain.id as 'arc-testnet' | 'aevum-testnet');
+                            setShowNetworkMenu(false);
+                          }}
+                          className={`flex w-full items-center justify-between gap-3 px-3 py-2 text-left transition-fast ${
+                            chain.id === activeChainKey ? 'bg-[#C2885B]/[0.06]' : 'hover:bg-white/[0.04]'
+                          }`}
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className="flex h-6 w-6 items-center justify-center rounded-full bg-[#C2885B]/[0.1] text-[#C2885B]">
+                              <Wallet className="h-3 w-3" />
+                            </div>
+                            <div>
+                              <p className="text-xs font-medium text-[#F5F3FF]">{chain.name}</p>
+                              <p className="text-[10px] text-[#71717A]">Chain ID: {chain.chainId}</p>
+                            </div>
+                          </div>
+                          {chain.id === activeChainKey && (
+                            <span className="text-[10px] font-medium text-[#C2885B]">Active</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
               <button
                 onClick={() => void refreshWalletData()}
@@ -3150,7 +3279,7 @@ function App() {
                     return (
                       <a
                         key={transaction.hash}
-                        href={`${EXPLORER_URL}/tx/${transaction.hash}`}
+                        href={`${getExplorerUrlForChain(activeChainKey)}/tx/${transaction.hash}`}
                         target="_blank"
                         rel="noreferrer"
                         className={`block py-4 border-b-0 transition-colors duration-180 hover:bg-white/[0.025] cursor-pointer ${isSwap ? 'bg-[#16171C]/5 border-[#16171C]/20' : ''} ${transaction.status === 'error' ? 'opacity-50' : ''}`}
@@ -3506,7 +3635,7 @@ function App() {
               <h3 className="text-xl font-semibold text-[#F5F3FF]">Request</h3>
               <button onClick={() => {
                 setShowRequest(false);
-                setRequestAssetKey('native-usdc');
+                setRequestAssetKey(`native-${(activeChainConfig?.nativeCurrency?.symbol ?? 'USDC').toLowerCase()}`);
                 setRequestAmount('');
                 setRequestNote('');
                 setRequestAmountError('');
@@ -3857,9 +3986,9 @@ function App() {
                         </span>
                       ) : gasFeeEstimate !== null ? (
                         <div className="text-right">
-                          <span className="text-[#F5F3FF]">{gasFeeEstimate} USDC</span>
+                          <span className="text-[#F5F3FF]">{gasFeeEstimate} {nativeSymbol}</span>
                           {(() => {
-                            const feeUsd = getAssetUsdValue('USDC', gasFeeEstimate);
+                            const feeUsd = getAssetUsdValue(nativeSymbol, gasFeeEstimate);
                             return feeUsd !== null ? (
                               <span className="ml-2 text-xs text-[#71717A]">≈ ${formatDisplayBalance(feeUsd)}</span>
                             ) : null;
@@ -4132,7 +4261,7 @@ function App() {
                     <LoaderCircle className="h-4 w-4 animate-spin" />
                     <p>{txConfirmationTimedOut ? 'Still confirming — check the explorer' : 'Confirming on-chain…'}</p>
                   </div>
-                  <a href={`${EXPLORER_URL}/tx/${txHash}`} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-2 text-[#C2885B]">
+                  <a href={`${getExplorerUrlForChain(activeChainKey)}/tx/${txHash}`} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-2 text-[#C2885B]">
                     View on explorer <ExternalLink className="h-4 w-4" />
                   </a>
                 </div>
@@ -4140,7 +4269,7 @@ function App() {
               {txState === 'success' && txHash ? (
                 <div className="rounded-2xl border border-emerald-700/40 bg-emerald-500/10 p-3 text-sm text-emerald-300">
                   <p>Transaction confirmed on-chain.</p>
-                  <a href={`${EXPLORER_URL}/tx/${txHash}`} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-2 text-emerald-200">
+                  <a href={`${getExplorerUrlForChain(activeChainKey)}/tx/${txHash}`} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-2 text-emerald-200">
                     View on explorer <ExternalLink className="h-4 w-4" />
                   </a>
                 </div>
@@ -4149,7 +4278,7 @@ function App() {
                 <div className="rounded-2xl border border-red-700/40 bg-red-500/10 p-3 text-sm text-red-300">
                   <p>{txErrorDetail ?? error ?? 'Transaction failed.'}</p>
                   {txHash ? (
-                    <a href={`${EXPLORER_URL}/tx/${txHash}`} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-2 text-red-200">
+                    <a href={`${getExplorerUrlForChain(activeChainKey)}/tx/${txHash}`} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-2 text-red-200">
                       View on explorer <ExternalLink className="h-4 w-4" />
                     </a>
                   ) : null}

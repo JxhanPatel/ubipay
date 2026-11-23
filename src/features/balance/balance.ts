@@ -5,6 +5,8 @@ export type AssetBalance = {
   decimals?: number;
 };
 
+import { buildRequestLink as buildDeepLinkRequestLink } from '../../utils/deepLink';
+
 export type NativeBalance = {
   address: string;
   coinBalance: bigint;
@@ -352,20 +354,7 @@ export const formatAmountForInput = (amount: number | string, decimals: number) 
 };
 
 export const buildRequestLink = (id: string, amount: string, note = '') => {
-  const normalizedId = id.trim();
-  const normalizedAmount = amount.trim();
-  const normalizedNote = note.trim();
-
-  if (!normalizedId || !normalizedAmount) {
-    return '';
-  }
-
-  const baseLink = `arcpay://request?id=${normalizedId}&amount=${normalizedAmount}`;
-  if (!normalizedNote) {
-    return baseLink;
-  }
-
-  return `${baseLink}&note=${encodeURIComponent(normalizedNote)}`;
+  return buildDeepLinkRequestLink(id, amount, note);
 };
 
 export const filterNonZeroAssetBalances = (assets: AssetBalance[]) => {
@@ -427,7 +416,7 @@ export const parseTokenBalances = (
       const decimals = Number(token.decimals ?? getAssetDecimals(symbol));
       const balance = toBigInt(item.value ?? '0');
       const balanceFormatted = formatTokenBalance(balance, Number.isFinite(decimals) ? decimals : getAssetDecimals(symbol));
-      const tokenAddress = String(token.address_hash ?? symbol);
+      const tokenAddress = String(token.address_hash ?? token.address ?? symbol);
 
       return {
         address,
