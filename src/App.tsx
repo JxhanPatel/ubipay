@@ -7,7 +7,6 @@ import {
   ArrowUpDown,
   ArrowUpRight,
   CheckCircle2,
-  ChevronDown,
   ChevronRight,
   Clock,
   Copy,
@@ -35,6 +34,7 @@ import eurcSvg from './assets/eurc.svg';
 import cirbtcSvg from './assets/cirbtc.svg';
 import qdayLogo from './assets/qday.png';
 import usd8Logo from './assets/usd8.png';
+import { NetworkSwitcher } from './components/ui/NetworkSwitcher';
 import { QRCodeSVG } from 'qrcode.react';
 import { BrowserQRCodeReader } from '@zxing/browser';
 import {
@@ -1152,7 +1152,6 @@ function App() {
   const [showContacts, setShowContacts] = useState(false);
   const [showContactPicker, setShowContactPicker] = useState(false);
   const [confirmRemoval, setConfirmRemoval] = useState(false);
-  const [showNetworkMenu, setShowNetworkMenu] = useState(false);
   const [activeChainKey, setActiveChain] = useState<'arc-testnet' | 'aevum-testnet'>('arc-testnet');
   const [contacts, setContacts] = useState<Contact[]>(getContacts());
   const [transactions, setTransactions] = useState<TransactionHistoryItem[]>([]);
@@ -2850,61 +2849,13 @@ function App() {
             </div>
             <div className="flex items-center gap-3 shrink-0">
               {/* Network Switcher */}
-              <div className="relative">
-                <button
-                  onClick={() => setShowNetworkMenu((prev) => !prev)}
-                  className="inline-flex items-center gap-2 rounded-full border border-white/[0.06] bg-[#0F1115] px-3 py-1.5 transition-fast hover:border-[#C2885B]/40 hover:bg-[#C2885B]/[0.08]"
-                  aria-label="Switch network"
-                  aria-expanded={showNetworkMenu}
-                >
-                  <span className="text-xs font-medium text-[#A1A1AA] transition-fast group-hover:text-[#F5F3FF]">
-                    {getChainConfig(activeChainKey)?.shortName ?? 'Arc'}
-                  </span>
-                  <ChevronDown className="h-3 w-3 text-[#71717A] transition-fast" />
-                </button>
-                {showNetworkMenu && (
-                  <div
-                    className="absolute right-0 z-50 mt-1.5 min-w-[150px] rounded-xl border border-white/[0.08] bg-[#0F1115] overflow-hidden surface-with-border"
-                    role="menu"
-                    aria-label="Network selector"
-                  >
-                    <div className="px-3 py-2">
-                      <p className="subhead text-[#71717A] mb-3">Network</p>
-                    </div>
-                    <div className="py-1">
-                      {getAllChains().map((chain) => (
-                        <button
-                          key={chain.id}
-                          type="button"
-                          role="menuitem"
-                          tabIndex={0}
-                          onClick={() => {
-                            setActiveChain(chain.id as 'arc-testnet' | 'aevum-testnet');
-                            void refreshWalletData(undefined, chain.id as 'arc-testnet' | 'aevum-testnet');
-                            setShowNetworkMenu(false);
-                          }}
-                          className={`flex w-full items-center justify-between gap-3 px-3 py-2 text-left transition-fast ${
-                            chain.id === activeChainKey ? 'bg-[#C2885B]/[0.06]' : 'hover:bg-white/[0.04]'
-                          }`}
-                        >
-                          <div className="flex items-center gap-3">
-                            <div className="flex h-6 w-6 items-center justify-center rounded-full bg-[#C2885B]/[0.1] text-[#C2885B]">
-                              <Wallet className="h-3 w-3" />
-                            </div>
-                            <div>
-                              <p className="text-xs font-medium text-[#F5F3FF]">{chain.name}</p>
-                              <p className="text-[10px] text-[#71717A]">Chain ID: {chain.chainId}</p>
-                            </div>
-                          </div>
-                          {chain.id === activeChainKey && (
-                            <span className="text-[10px] font-medium text-[#C2885B]">Active</span>
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
+              <NetworkSwitcher
+                activeChainKey={activeChainKey}
+                onSwitch={(chainId) => {
+                  setActiveChain(chainId);
+                  void refreshWalletData(undefined, chainId);
+                }}
+              />
               <button
                 onClick={() => void refreshWalletData()}
                 className="group flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.06] bg-[#0F1115] transition-fast hover:border-[#C2885B]/40 hover:bg-[#C2885B]/[0.08]"
