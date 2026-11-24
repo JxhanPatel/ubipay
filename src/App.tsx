@@ -103,6 +103,7 @@ import {
 } from './features/accounts/accounts';
 import { Swap } from './components/Swap';
 import { getChainConfig, getAllChains, getExplorerUrl, formatTxExplorerUrl, getTokenAddress } from './config/chains';
+import { cancelFetch, isLatestRefresh, resetNativeAssetPlaceholder } from './utils/fetchUtils';
 
 const ARC_RPC_URL = 'https://rpc.testnet.arc.io';
 const ARC_CHAIN_ID = 5042002;
@@ -1290,6 +1291,15 @@ function App() {
   // in-memory session storage (see src/accounts.ts). In-memory only.
   const [pendingSessionSeed, setPendingSessionSeed] = useState<string | null>(null);
 
+  // Monotonic refresh generation used to discard stale async responses from
+  // superseded account / network switches. Only the response matching the
+  // latest generation may commit balance / holdings state.
+  const refreshGenerationRef = useRef(0);
+
+  // Holds the AbortControllers of the most recent refresh so superseded
+  // requests can be cancelled immediately when a new switch starts.
+  const lastAbortRef = useRef<{ native?: AbortController; token?: AbortController } | null>(null);
+
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const scannerStreamRef = useRef<MediaStream | null>(null);
   const scannerLoopRef = useRef<number | null>(null);
@@ -1341,22 +1351,51 @@ function App() {
     };
   }, [wallet, provider]);
 
-  const refreshBalance = async (currentWallet?: ArcWallet | null, chainKeyOverride?: string) => {
+  const refreshBalance = async (
+    currentWallet?: ArcWallet | null,
+    chainKeyOverride?: string,
+    generation?: number,
+  ) => {
     const targetWallet = currentWallet ?? wallet;
     if (!targetWallet) return;
-    setIsLoading(true);
-    setError(null);
-    try {
-      const address = targetWallet.address;
 
-      // Fetch both native balance and token balances in parallel
+    try {
+      // Fetch both native balance and token balances in parallel.
+      // An explicit chain key is always used so this refresh never reads a
+      // stale `activeChainKey` closure value from a just-completed switch.
       const resolvedChainKey = chainKeyOverride ?? activeChainKey;
       const activeChainConfig = getChainConfig(resolvedChainKey);
       const explorerApiUrl = activeChainConfig?.apiUrl ?? ARC_EXPLORER_API_URL;
+      const address = targetWallet.address;
+
+      // AbortControllers for this refresh so a newer switch can cancel stale
+      // in-flight requests before they overwrite the current wallet's state.
+      const nativeCtrl = new AbortController();
+      const tokenCtrl = new AbortController();
+
+      // Cancel any in-flight requests for this target.
+      const prevNative = lastAbortRef.current?.native;
+      const prevToken = lastAbortRef.current?.token;
+      cancelFetch(prevNative);
+      cancelFetch(prevToken);
+      lastAbortRef.current = { native: nativeCtrl, token: tokenCtrl };
+
+      // Reset state to placeholders BEFORE any network request so the previous
+      // account / chain balance is never shown while the refresh is in flight.
+      setBalance('0');
+      setTokenAssets([]);
+      setAssetBalances([
+        resetNativeAssetPlaceholder(
+          activeChainConfig?.nativeCurrency?.symbol ?? 'USDC',
+          activeChainConfig?.nativeCurrency?.decimals ?? 18,
+        ),
+      ]);
+      setError(null);
+      setIsLoading(true);
 
       const [nativeResponse, tokenResponse] = await Promise.all([
-        fetch(`${explorerApiUrl}/addresses/${address}`),
-        fetch(`${explorerApiUrl}/addresses/${address}/token-balances`),
+        fetch(`${explorerApiUrl}/addresses/${address}`, { signal: nativeCtrl.signal }),
+        fetch(`${explorerApiUrl}/addresses/${address}/token-balances`, { signal: tokenCtrl.signal }),
       ]);
 
       if (!nativeResponse.ok) {
@@ -1388,13 +1427,6 @@ function App() {
           decimals: balance.decimals,
         }));
 
-      // Set the primary balance to native USDC (coin_balance)
-      // This is what funds sends and pays gas
-      setBalance(nativeBalanceFormatted);
-
-      // Store token assets separately
-      setTokenAssets(normalizedAssets);
-
       // Combine native currency with token assets for asset balances display
       // Native currency should be first since it's the primary balance
       const nativeDecimals = activeChainConfig?.nativeCurrency?.decimals ?? 18;
@@ -1407,6 +1439,20 @@ function App() {
         },
         ...normalizedAssets.filter((asset) => asset.symbol !== nativeSymbol),
       ];
+
+      // Discard results from a superseded refresh (a newer account / network
+      // switch already started) so an out-of-order response can never
+      // overwrite the current wallet's balances.
+      if (generation !== undefined && !isLatestRefresh(generation, refreshGenerationRef.current)) {
+        return;
+      }
+
+      // Set the primary balance to native USDC (coin_balance)
+      // This is what funds sends and pays gas
+      setBalance(nativeBalanceFormatted);
+
+      // Store token assets separately
+      setTokenAssets(normalizedAssets);
 
       setAssetBalances(assetBalancesWithNative);
     } catch (err) {
@@ -1444,11 +1490,18 @@ function App() {
     const targetWallet = currentWallet ?? wallet;
     if (!targetWallet) return;
 
+    // Mark this refresh as the latest generation so only its results commit.
+    const generation = ++refreshGenerationRef.current;
+
     const resolvedChainKey = chainKeyOverride ?? activeChainKey;
-    await Promise.all([
-      refreshBalance(targetWallet, resolvedChainKey),
-      refreshTransactionHistory(targetWallet, resolvedChainKey),
-    ]);
+    try {
+      await Promise.all([
+        refreshBalance(targetWallet, resolvedChainKey, generation),
+        refreshTransactionHistory(targetWallet, resolvedChainKey),
+      ]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to refresh wallet data.');
+    }
   };
 
   // Handle wallet unlock with PIN. The AES-GCM vault payload stored under
@@ -1756,7 +1809,9 @@ function App() {
     setVaultInStorage(serializeVaultPayload(vaultPayload));
     setWallet(connectedWallet);
     setActiveAccountIndexWithState(index);
-    void refreshWalletData(connectedWallet);
+    // Pass the currently active chain explicitly so this refresh never reads
+    // a stale closure value from a just-completed network switch.
+    void refreshWalletData(connectedWallet, activeChainKey);
   };
 
   const handleRenameAccount = (index: number, label: string) => {
