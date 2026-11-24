@@ -33,6 +33,7 @@ import usdcSvg from './assets/usdc.svg';
 import eurcSvg from './assets/eurc.svg';
 import cirbtcSvg from './assets/cirbtc.svg';
 import qdayLogo from './assets/qday.png';
+import arcLogo from './assets/arc.png';
 import usd8Logo from './assets/usd8.png';
 import { NetworkSwitcher } from './components/ui/NetworkSwitcher';
 import { QRCodeSVG } from 'qrcode.react';
@@ -109,6 +110,11 @@ const ARC_NETWORK_NAME = 'Arc Testnet';
 const ARC_CURRENCY_SYMBOL = 'USDC';
 const ARC_EXPLORER_API_URL = 'https://explorer.testnet.arc.io/api/v2';
 const NATIVE_VALUE_DECIMALS = 18;
+
+const CHAIN_LOGO: Record<string, string> = {
+  'arc-testnet': arcLogo,
+  'aevum-testnet': qdayLogo,
+};
 
 // Chain-aware explorer URL for transaction links — uses the currently active chain.
 const getExplorerUrlForChain = (chainKey: string) => {
@@ -309,6 +315,7 @@ export const createOptimisticSendUpdate = (input: {
     tokenSymbol: symbol,
     decimals,
     timestamp: Date.now(),
+    chainKey,
     direction: 'sent',
     status: 'confirming',
   };
@@ -433,6 +440,7 @@ export type TransactionHistoryItem = {
   timestamp: number;
   direction: 'sent' | 'received';
   type?: 'swap' | 'transfer';
+  chainKey?: string;
   status: 'ok' | 'pending' | 'error' | 'confirming';
   // Combined swap fields (populated by groupSwapPairs)
   inputSymbol?: string;      // e.g. 'USDC'
@@ -602,6 +610,7 @@ const groupSwapPairs = (items: TransactionHistoryItem[]): TransactionHistoryItem
         const outputItem = a.direction === 'received' ? a : b;
         const combined: TransactionHistoryItem = {
           hash: a.hash,
+          chainKey: a.chainKey,
           from: a.from,
           to: a.to,
           value: inputItem.value,
@@ -754,6 +763,7 @@ export const fetchTransactionHistory = async (address: string, chainKey?: string
 
       return {
         hash,
+        chainKey: resolvedChainKey,
         from: txFrom,
         to: txTo,
         value: formatTokenBalance(displayMeta.rawValue, displayMeta.decimals),
@@ -3239,7 +3249,9 @@ function App() {
 
               {!isHistoryLoading && !historyError && transactions.length > 0 ? (
                 <div className="pr-1 custom-scrollbar scrollbar-hide overflow-y-auto">
-                  {transactions.map((transaction) => {
+                  {transactions
+                    .filter((tx) => tx.chainKey === activeChainKey)
+                    .map((transaction) => {
                     const counterparty = transaction.direction === 'sent' ? transaction.to : transaction.from;
                     const tokenDisplay = formatDisplayBalance(transaction.value);
                     const statusDisplay = STATUS_DISPLAY[transaction.status] ?? STATUS_DISPLAY.pending;
@@ -3252,6 +3264,10 @@ function App() {
                     ) : (
                       <ArrowUpRight className="h-4 w-4 text-rose-500/70" />
                     );
+
+                    const chainConfig = getChainConfig(activeChainKey);
+                    const chainLogo = CHAIN_LOGO[activeChainKey];
+                    const chainName = chainConfig?.name ?? chainConfig?.shortName ?? 'Chain';
 
                     return (
                       <a
@@ -3316,6 +3332,12 @@ function App() {
                                 {transaction.status === 'ok' ? 'OK' : statusDisplay.label}
                               </span>
                               <ExternalLink className="h-3.5 w-3.5 text-[#71717A] opacity-60 group-hover:opacity-100 transition-opacity" />
+                              {chainLogo ? (
+                                <span className="flex items-center gap-1.5 rounded-full border border-white/[0.06] bg-[#16171C] pl-1 pr-2 py-0.5">
+                                  <img src={chainLogo} alt="" className="h-3.5 w-3.5 rounded-full object-cover ring-1 ring-white/10" />
+                                  <span className="text-[10px] font-medium text-[#A1A1AA] leading-none">{chainName}</span>
+                                </span>
+                              ) : null}
                             </div>
                           </div>
                         </div>
