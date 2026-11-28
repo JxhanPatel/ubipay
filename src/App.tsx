@@ -1374,8 +1374,8 @@ function App() {
       const tokenCtrl = new AbortController();
 
       // Cancel any in-flight requests for this target.
-      const prevNative = lastAbortRef.current?.native;
-      const prevToken = lastAbortRef.current?.token;
+      const prevNative = lastAbortRef.current?.native ?? null;
+      const prevToken = lastAbortRef.current?.token ?? null;
       cancelFetch(prevNative);
       cancelFetch(prevToken);
       lastAbortRef.current = { native: nativeCtrl, token: tokenCtrl };

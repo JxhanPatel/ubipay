@@ -74,6 +74,9 @@ describe('buildSendTransactionPlan', () => {
     );
 
     expect(plan.kind).toBe('native');
+    if (plan.kind !== 'native') {
+      throw new Error('Expected native plan.');
+    }
     expect(plan.tx).toEqual({
       to: '0xE5074CBbd046AFb491EB8692abD6cF7ECCC6dEE5',
       value: ethers.parseUnits('1.5', 18),
@@ -90,6 +93,9 @@ describe('buildSendTransactionPlan', () => {
     );
 
     expect(plan.kind).toBe('token');
+    if (plan.kind !== 'token') {
+      throw new Error('Expected token plan.');
+    }
     expect(plan.tokenAddress).toBe(envTUSD8);
     expect(plan.abi).toEqual(ERC20_TRANSFER_ABI);
     expect(plan.args).toEqual([
@@ -108,6 +114,9 @@ describe('buildSendTransactionPlan', () => {
     );
 
     expect(plan.kind).toBe('token');
+    if (plan.kind !== 'token') {
+      throw new Error('Expected token plan.');
+    }
     expect(plan.tokenAddress).toBe(envTUSD8);
   });
 
