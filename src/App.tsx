@@ -1462,7 +1462,11 @@ function App() {
     }
   };
 
-  const refreshTransactionHistory = async (currentWallet?: ArcWallet | null, chainKeyOverride?: string) => {
+  const refreshTransactionHistory = async (
+    currentWallet?: ArcWallet | null,
+    chainKeyOverride?: string,
+    generation?: number,
+  ) => {
     const targetWallet = currentWallet ?? wallet;
     if (!targetWallet) return;
     setIsHistoryLoading(true);
@@ -1470,13 +1474,22 @@ function App() {
 
     try {
       const resolvedChainKey = chainKeyOverride ?? activeChainKey;
-    const nextTransactions = await fetchTransactionHistory(targetWallet.address, resolvedChainKey);
+      const nextTransactions = await fetchTransactionHistory(targetWallet.address, resolvedChainKey);
+      // Discard results from a superseded refresh (a newer account / chain
+      // switch whose response arrives after this one) so stale history from a
+      // previous account can never land on top of the current one.
+      if (generation !== undefined && !isLatestRefresh(generation, refreshGenerationRef.current)) {
+        return;
+      }
       // Merge (not replace): any still-'confirming' optimistic item whose hash
       // has not shown up on-chain yet stays pinned at the top; once the
       // explorer returns the real record for a hash it wins, so we never end
       // up with two entries for the same hash.
       setTransactions((current) => mergeFetchedTransactions(current, nextTransactions));
     } catch (err) {
+      if (generation !== undefined && !isLatestRefresh(generation, refreshGenerationRef.current)) {
+        return;
+      }
       setHistoryError(err instanceof Error ? err.message : 'Unable to fetch transaction history.');
       // Keep in-flight optimistic items so a transient explorer failure does
       // not make a pending send vanish from history.
@@ -1490,6 +1503,12 @@ function App() {
     const targetWallet = currentWallet ?? wallet;
     if (!targetWallet) return;
 
+    // Keep only pending sends; drop stale history from the previous account / chain
+    // so that switching accounts or networks does not inherit the old account's
+    // transactions. Non-confirming items are cleared; confirming items survive
+    // (they will be repopulated by the new fetch or re-optimistically set on send).
+    setTransactions((current) => current.filter((tx) => tx.status === 'confirming'));
+
     // Mark this refresh as the latest generation so only its results commit.
     const generation = ++refreshGenerationRef.current;
 
@@ -1497,7 +1516,7 @@ function App() {
     try {
       await Promise.all([
         refreshBalance(targetWallet, resolvedChainKey, generation),
-        refreshTransactionHistory(targetWallet, resolvedChainKey),
+        refreshTransactionHistory(targetWallet, resolvedChainKey, generation),
       ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to refresh wallet data.');
